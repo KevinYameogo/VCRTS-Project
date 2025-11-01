@@ -6,6 +6,7 @@ public class Job {
     private String duration;
     private String deadline;
     private String timestamp;
+    
 
     public Job(String clientId, String duration, String deadline, String timestamp) {
         this.clientId = clientId;
@@ -13,6 +14,7 @@ public class Job {
         this.deadline = deadline;
         this.timestamp = timestamp;
     }
+    
 
     // Getters
     public String getClientId() { return clientId; }

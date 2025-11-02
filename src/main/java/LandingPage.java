@@ -1,46 +1,79 @@
-
 import javax.swing.*;
-
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import io.github.cdimascio.dotenv.Dotenv;
-
+// import io.github.cdimascio.dotenv.Dotenv; // Uncomment if you have dotenv setup
 
 public class LandingPage extends JFrame {
- 
+
+    // Main layout components
+    private CardLayout cardLayout;
+    private JPanel mainContentPanel; // This panel holds all "pages" as cards
+    
+    //
+    private VCController controller;
+
+    // Login page components
     private JComboBox<String> roleComboBox;
     private JPanel loginPanel;
     private JLabel infoLabel;
+    private JTextField usernameField;
+    private JPasswordField passwordField;
     Dotenv dotenv = Dotenv.load();
 
-    
+
 
     // Client auth info
     private final String CLIENT_USERNAME = dotenv.get("CLIENT_USERNAME");
     private final String CLIENT_PASSWORD = dotenv.get("CLIENT_PASSWORD");
-  
-    // Owner auth info
-     
-    private final String OWNER_USERNAME = dotenv.get("OWNER_USERNAME"); 
-    private final String OWNER_PASSWORD = dotenv.get("OWNER_PASSWORD");
+    
 
-    public LandingPage() {
+    // Owner auth info
+    private final String OWNER_USERNAME = dotenv.get("OWNER_USERNAME");
+    private final String OWNER_PASSWORD = dotenv.get("OWNER_PASSWORD");
+    
+
+    public LandingPage(VCController controller) {
         //main frame boiler
         setTitle("VCRTS");
         setSize(700, 500);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setResizable(false);
         setLocationRelativeTo(null);
+        
+        this.controller = controller;
 
+        // 1. --- Setup the CardLayout ---
+        cardLayout = new CardLayout();
+        mainContentPanel = new JPanel(cardLayout);
+
+        // 2. --- Create the Login Panel ("LOGIN" card) ---
+        // We call a method to build this panel, just to keep the constructor clean.
+        JPanel loginViewPanel = createLoginPanel();
+        mainContentPanel.add(loginViewPanel, "LOGIN");
+
+        // 3. --- Add the mainContentPanel to the JFrame ---
+        add(mainContentPanel);
+
+        // 4. --- Show the LOGIN card first ---
+        cardLayout.show(mainContentPanel, "LOGIN");
+
+        // Set visible at the very end
+        setVisible(true);
+    }
+
+    /**
+     * Creates the entire Login screen panel.
+     * This is the user's original LandingPage UI.
+     */
+    private JPanel createLoginPanel() {
         // Main panel with vertical BoxLayout
         JPanel mainPanel = new JPanel();
         mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));// padding top,left,bottom, right
-
         mainPanel.setBackground(new Color(187, 213, 237));
 
-        
         // Logo
         JLabel logoLabel = new JLabel("VCRTS", SwingConstants.CENTER);
         logoLabel.setFont(new Font("SansSerif", Font.BOLD, 32));
@@ -53,7 +86,7 @@ public class LandingPage extends JFrame {
         fullNameLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
         mainPanel.add(fullNameLabel);
 
-        // Spacing between component in our vertical container
+        // Spacing
         mainPanel.add(Box.createVerticalStrut(8));
 
         // Welcome message
@@ -66,7 +99,7 @@ public class LandingPage extends JFrame {
 
         // Info label for role
         infoLabel = new JLabel("Choose your role to continue.", SwingConstants.CENTER);
-        infoLabel.setFont(new Font("SansSerif",Font.BOLD,18));
+        infoLabel.setFont(new Font("SansSerif", Font.BOLD, 18));
         infoLabel.setForeground(Color.DARK_GRAY);
         infoLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
         mainPanel.add(infoLabel);
@@ -87,22 +120,21 @@ public class LandingPage extends JFrame {
         loginPanel.setVisible(false);
         loginPanel.setBackground(new Color(187, 213, 237));
 
-        //username field label //princetaller
+        //username field label
         JLabel usernameLabel = new JLabel("Username");
-        usernameLabel.setForeground(Color.BLACK); 
+        usernameLabel.setForeground(Color.BLACK);
         usernameLabel.setFont(new Font("MONOSCAPED", Font.BOLD, 14)); // font and size
         usernameLabel.setAlignmentX(Component.CENTER_ALIGNMENT); // center in BoxLayout
         loginPanel.add(usernameLabel);
 
         // Username input field
-        JTextField usernameField = new JTextField();
+        usernameField = new JTextField();
         usernameField.setPreferredSize(new Dimension(300, 30));
         usernameField.setMaximumSize(new Dimension(300, 30));
-        usernameField.setFont(new Font("SansSerif",Font.BOLD,16));
+        usernameField.setFont(new Font("SansSerif", Font.BOLD, 16));
         usernameField.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-        //Password field label //guy1234
-
+        //Password field label
         JLabel passwordLabel = new JLabel("Password");
         passwordLabel.setForeground(Color.BLACK);
         passwordLabel.setFont(new Font("MONOSCAPED", Font.BOLD, 14));
@@ -110,10 +142,10 @@ public class LandingPage extends JFrame {
         loginPanel.add(passwordLabel);
 
         // Password input field
-        JPasswordField passwordField = new JPasswordField();
+        passwordField = new JPasswordField();
         passwordField.setPreferredSize(new Dimension(300, 30));
         passwordField.setMaximumSize(new Dimension(300, 30));
-        passwordField.setFont(new Font("SansSerif",Font.BOLD,16));
+        passwordField.setFont(new Font("SansSerif", Font.BOLD, 16));
         passwordField.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         // Login button
@@ -133,52 +165,76 @@ public class LandingPage extends JFrame {
         // Add loginPanel to mainPanel
         mainPanel.add(loginPanel);
 
-        // Role selection 
+        // Role selection
         roleComboBox.addActionListener(e -> {
-          int index = roleComboBox.getSelectedIndex();
-          if (index == 1) { // Client
-              infoLabel.setText("Client view: Welcome! Login to continue.");
-              loginPanel.setVisible(true);
-          } else if (index == 2) { // Owner
-              infoLabel.setText("Owner view: Welcome! Login to continue.");
-              loginPanel.setVisible(true);
-          } else { // Select role
-              infoLabel.setText("Choose your role to continue.");
-              loginPanel.setVisible(false);
-          }
-      });
+            int index = roleComboBox.getSelectedIndex();
+            // Clear fields when changing role
+            usernameField.setText("");
+            passwordField.setText("");
+            
+            if (index == 1) { // Client
+                infoLabel.setText("Client view: Welcome! Login to continue.");
+                loginPanel.setVisible(true);
+            } else if (index == 2) { // Owner
+                infoLabel.setText("Owner view: Welcome! Login to continue.");
+                loginPanel.setVisible(true);
+            } else { // Select role
+                infoLabel.setText("Choose your role to continue.");
+                loginPanel.setVisible(false);
+            }
+        });
 
+        // *** THIS IS THE KEY CHANGE ***
         // show pages for each role(client or owner)
         loginButton.addActionListener(ev -> {
-          int index = roleComboBox.getSelectedIndex();
-          String username = usernameField.getText();
-          String password = new String(passwordField.getPassword());
-      
-          if (index == 1) { // Client
-      	    if (username.equals("princetaller") && password.equals("guy1234")) {
-      	        this.setVisible(false);
-      	        // Automatically open the VisJob page for the client
-      	        new VisJob(username);
-      	    } else {
-      	        infoLabel.setText("Invalid username or password!");
-      	    }
-      	
-          } else if (index == 2) { // Owner
-              if (username.equals("owner") && password.equals("owner123")) {
-                 this.setVisible(false);
-                  //create a Owner.java class
-                  //owner.rentCar(); // your owner logic here
-                  Owner owner1 = new Owner(username);
-              } else {
-                  infoLabel.setText("Invalid username or password!");
-              }
-          } else {
-              infoLabel.setText("Select a role to continue.");
-          }
-      });
+            int index = roleComboBox.getSelectedIndex();
+            String username = usernameField.getText();
+            String password = new String(passwordField.getPassword());
 
-        // Add mainPanel to frame
-        add(mainPanel);
-        setVisible(true);
+            // A "Runnable" command that we will pass to the dashboard panels
+            // This command tells the CardLayout to show the "LOGIN" panel
+            Runnable onLogout = () -> {
+                cardLayout.show(mainContentPanel, "LOGIN");
+                passwordField.setText("");
+            };
+
+            if (index == 1) { // Client
+                if (username.equals(CLIENT_USERNAME) && password.equals(CLIENT_PASSWORD)) {
+                    
+                    // 1. Create the Client panel, passing the username and the logout command
+                    ClientGUI clientPanel = new ClientGUI(username, onLogout,this.controller);
+                    
+                    // 2. Add the panel to the card layout (replaces old one if it exists)
+                    mainContentPanel.add(clientPanel, "CLIENT_VIEW");
+                    
+                    // 3. Switch to the Client panel
+                    cardLayout.show(mainContentPanel, "CLIENT_VIEW");
+                    
+                } else {
+                    infoLabel.setText("Invalid username or password!");
+                }
+
+            } else if (index == 2) { // Owner
+                if (username.equals(OWNER_USERNAME) && password.equals(OWNER_PASSWORD)) {
+                    
+                    // 1. Create the Owner panel
+                    OwnerGUI ownerPanel = new OwnerGUI(username, onLogout,this.controller);
+                    
+                    // 2. Add it to the card layout
+                    mainContentPanel.add(ownerPanel, "OWNER_VIEW");
+                    
+                    // 3. Switch to the Owner panel
+                    cardLayout.show(mainContentPanel, "OWNER_VIEW");
+                    
+                } else {
+                    infoLabel.setText("Invalid username or password!");
+                }
+            } else {
+                infoLabel.setText("Select a role to continue.");
+            }
+        });
+
+        return mainPanel;
     }
+   
 }

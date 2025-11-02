@@ -12,6 +12,7 @@ or
 alias runmain='mvn exec:java -Dexec.mainClass="Main"'
 
 
+
 ```
 
 and type runmain on terminal

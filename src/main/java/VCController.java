@@ -249,4 +249,10 @@ public class VCController {
     }
     return output.toString();
   }
+
+  //get inprogress jobs
+  public List<Job> getInProgressJobs() {
+    return inProgressJobs;
+  }
+
 }

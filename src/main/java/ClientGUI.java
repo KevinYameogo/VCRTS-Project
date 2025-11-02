@@ -1,0 +1,829 @@
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.text.*;
+import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.io.*; // Import all java.io
+import java.time.DateTimeException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashSet; // For duplicate checks
+import java.util.Set;     // For duplicate checks
+
+/**
+ * ClientGUI combines job submission, management, and billing into a 3-tab panel.
+ */
+public class ClientGUI extends JPanel {
+
+    // --- USER INFO ---
+    private final String clientName; // This is the logged-in user, e.g., "princetaller"
+    private final Runnable onLogout; 
+
+    // --- TAB 1 (Submit Job) FIELDS ---
+    private JTextField clientIdField; // This is the ID for the JOB
+    private JSpinner durationSpinner;
+    private JComboBox<String> durationUnitBox;
+    private JSpinner redundancySpinner; 
+    
+    private JSpinner deadlineMonthSpinner;
+    private JSpinner deadlineDaySpinner;
+    private JSpinner deadlineYearSpinner;
+    private JSpinner deadlineHourSpinner;
+
+    // --- TAB 3 (Billing) FIELDS ---
+    private String billingInfo; 
+    private JButton addBillingButton; // Button to open dialog
+    private JTable billingTable; 
+    private DefaultTableModel billingTableModel;
+    private BillingInfoDialog billingDialog; 
+
+    private DefaultTableModel tableModel;
+    private JTable table;
+    private DefaultListModel<Job> listModel; 
+    
+    // --- FILENAMES ---
+    private final String CSV_FILE; // File is now user-specific
+    private final String BILLING_FILE; // File for this user's billing info
+    
+    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    // --- TAB 2 (Manage Job) FIELDS ---
+    private VCController controller;
+
+    public ClientGUI(String clientName, Runnable onLogout,VCController controller) {
+        this.clientName = clientName;
+        this.onLogout = onLogout;
+        this.controller = controller;
+        this.billingInfo = ""; 
+        
+        // --- NEW: User-specific filenames ---
+        this.CSV_FILE = clientName + "_job_entries.csv";
+        this.BILLING_FILE = clientName + "_billing.dat"; // Use .dat for non-csv data
+
+        setLayout(new BorderLayout());
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("Submit New Job", createSubmitJobPanel());
+        tabs.addTab("Manage Existing Jobs", createManageJobsPanel());
+        tabs.addTab("Manage Billing", createBillingPanel()); // NEW TAB
+
+        add(tabs, BorderLayout.CENTER);
+        
+        // --- NEW: Load persistent data ---
+        loadJobsFromCSV();
+        loadBillingInfo();
+    }
+
+    /**
+     * Creates the "Submit New Job" panel (Tab 1)
+     */
+    private JPanel createSubmitJobPanel() {
+        JPanel root = new JPanel();
+        root.setLayout(new BoxLayout(root, BoxLayout.Y_AXIS));
+        root.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
+        root.setBackground(new Color(220, 240, 255));
+
+        JLabel header = new JLabel("Job Submission Console  |  Welcome " + clientName, SwingConstants.CENTER);
+        header.setAlignmentX(Component.CENTER_ALIGNMENT);
+        header.setFont(new Font("SansSerif", Font.BOLD, 18));
+        root.add(header);
+        root.add(Box.createVerticalStrut(10));
+
+        JPanel form = new JPanel(new GridBagLayout());
+        form.setOpaque(false);
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(6, 6, 6, 6);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+
+        // Initialize fields
+        clientIdField = new JTextField();
+        ((AbstractDocument) clientIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(4));
+
+        durationSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10000, 1));
+        durationUnitBox = new JComboBox<>(new String[]{"hours", "days"});
+        redundancySpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10, 1));
+        
+        LocalDateTime now = LocalDateTime.now().plusHours(1); 
+        deadlineMonthSpinner = new JSpinner(new SpinnerNumberModel(now.getMonthValue(), 1, 12, 1));
+        deadlineDaySpinner = new JSpinner(new SpinnerNumberModel(now.getDayOfMonth(), 1, 31, 1));
+        deadlineYearSpinner = new JSpinner(new SpinnerNumberModel(now.getYear(), now.getYear(), now.getYear() + 5, 1));
+        deadlineHourSpinner = new JSpinner(new SpinnerNumberModel(now.getHour(), 0, 23, 1));
+
+        int r = 0;
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Job ID (4 Chars):"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(clientIdField, gc);
+
+        JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        durationPanel.setOpaque(false);
+        durationPanel.add(durationSpinner);
+        durationPanel.add(durationUnitBox);
+
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Job Duration:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(durationPanel, gc);
+
+        JPanel deadlinePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        deadlinePanel.setOpaque(false);
+        deadlinePanel.add(new JLabel("M:"));
+        deadlinePanel.add(deadlineMonthSpinner);
+        deadlinePanel.add(new JLabel("D:"));
+        deadlinePanel.add(deadlineDaySpinner);
+        deadlinePanel.add(new JLabel("Y:"));
+        deadlinePanel.add(deadlineYearSpinner);
+        deadlinePanel.add(new JLabel("Hour (0-23):"));
+        deadlinePanel.add(deadlineHourSpinner);
+
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Job Deadline:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(deadlinePanel, gc);
+
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Redundancy Level:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(redundancySpinner, gc);
+
+        // --- BUTTONS ---
+        JButton submitButton = new JButton("Submit Job"); 
+        JButton clearButton = new JButton("Clear Form");
+        JButton logoutButton = new JButton("Logout"); 
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 5)); 
+        buttons.setOpaque(false);
+        buttons.add(submitButton); 
+        buttons.add(clearButton);
+        buttons.add(logoutButton);
+
+        gc.gridx = 0; gc.gridy = r; gc.gridwidth = 2;
+        form.add(buttons, gc);
+
+        root.add(form);
+        root.add(Box.createVerticalStrut(12));
+
+        // === TABLE PANEL ===
+        tableModel = new DefaultTableModel(new Object[]{
+                "Timestamp", "Job ID", "Duration (Hours)", "Deadline", "Redundancy"
+        }, 0);
+        table = new JTable(tableModel);
+        JScrollPane tableScroll = new JScrollPane(table);
+        tableScroll.setPreferredSize(new Dimension(760, 260));
+        root.add(tableScroll);
+
+        // === EVENT HANDLERS ===
+        submitButton.addActionListener(this::onSubmit); 
+        clearButton.addActionListener(e -> clearForm());
+        
+        logoutButton.addActionListener(e -> onLogout.run());
+
+        return root;
+    }
+
+    /**
+     * Creates the "Manage Jobs" panel (Tab 2)
+     */
+    private JPanel createManageJobsPanel() {
+        // ... (This entire method is unchanged) ...
+        JPanel mainPanel = new JPanel();
+        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
+        mainPanel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
+        mainPanel.setBackground(new Color(235, 235, 235)); 
+
+        JLabel header = new JLabel("Job Management  |  Welcome " + clientName, SwingConstants.CENTER);
+        header.setAlignmentX(Component.CENTER_ALIGNMENT);
+        header.setFont(new Font("SansSerif", Font.BOLD, 18));
+        mainPanel.add(header);
+        mainPanel.add(Box.createVerticalStrut(10));
+
+        // ---- Check Job Status Section ----
+        JPanel checkStatusPanel = new JPanel(new GridBagLayout());
+        checkStatusPanel.setBorder(BorderFactory.createTitledBorder("Check Job Status"));
+        checkStatusPanel.setOpaque(false); 
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(8, 8, 8, 8);
+        gbc.anchor = GridBagConstraints.WEST;
+
+        gbc.gridx = 0; gbc.gridy = 0;
+        checkStatusPanel.add(new JLabel("Job ID:"), gbc);
+        JTextField jobIdField = new JTextField(15);
+        gbc.gridx = 1;
+        checkStatusPanel.add(jobIdField, gbc);
+        JButton checkBtn = new JButton("Check Status");
+        gbc.gridx = 2;
+        checkStatusPanel.add(checkBtn, gbc);
+        gbc.gridx = 0; gbc.gridy = 1;
+        checkStatusPanel.add(new JLabel("Status:"), gbc);
+        JLabel statusLabel = new JLabel("");
+        statusLabel.setOpaque(true);
+        statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        statusLabel.setPreferredSize(new Dimension(120, 28));
+        statusLabel.setBackground(Color.LIGHT_GRAY);
+        statusLabel.setForeground(Color.WHITE);
+        statusLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        statusLabel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Color.GRAY, 1, true),
+                BorderFactory.createEmptyBorder(4, 12, 4, 12)
+        ));
+        gbc.gridx = 1; gbc.gridy = 1; gbc.gridwidth = 2;
+        checkStatusPanel.add(statusLabel, gbc);
+        mainPanel.add(checkStatusPanel);
+        mainPanel.add(Box.createVerticalStrut(20));
+
+        // ---- In-Progress Jobs Section ----
+        JPanel progressPanel = new JPanel(new GridBagLayout());
+        progressPanel.setBorder(BorderFactory.createTitledBorder("In-Progress Jobs"));
+        progressPanel.setOpaque(false);
+        GridBagConstraints pgbc = new GridBagConstraints();
+        pgbc.insets = new Insets(10, 10, 10, 10);
+        pgbc.anchor = GridBagConstraints.NORTHWEST;
+
+        listModel = new DefaultListModel<>();
+        for (Job job: controller.getInProgressJobs()){
+          listModel.addElement(job);
+        }
+        JList<Job> jobList = new JList<>(listModel);
+        jobList.setVisibleRowCount(5);
+        JScrollPane scrollPane = new JScrollPane(jobList);
+        scrollPane.setPreferredSize(new Dimension(180, 100));
+        pgbc.gridx = 0; pgbc.gridy = 0; pgbc.gridheight = 2;
+        progressPanel.add(scrollPane, pgbc);
+        JButton triggerBtn = new JButton("Trigger Checkpoint");
+        pgbc.gridx = 1; pgbc.gridy = 0; pgbc.gridheight = 1;
+        pgbc.fill = GridBagConstraints.HORIZONTAL;
+        progressPanel.add(triggerBtn, pgbc);
+
+        //refresh button
+        JButton refreshBtn = new JButton("Refresh Jobs List");
+        pgbc.gridx = 1; pgbc.gridy = 1;
+        progressPanel.add(refreshBtn, pgbc);
+
+        
+        // --- *** TEXT-BASED LOADING LOGIC *** ---
+        
+        final JButton calcBtn = new JButton("<html>Calculate All<br>Completion Times</html>");
+        final String defaultCalcBtnText = "<html>Calculate All<br>Completion Times</html>";
+        
+        pgbc.gridy = 1;
+        pgbc.insets = new Insets(20, 10, 10, 10);
+        progressPanel.add(calcBtn, pgbc); 
+
+        final JTextField avgTimeField = new JTextField("Average Completion Time: ---");
+        avgTimeField.setEditable(false);
+        avgTimeField.setBorder(BorderFactory.createEmptyBorder(6, 12, 6, 12));
+        avgTimeField.setBackground(new Color(245, 245, 245));
+        avgTimeField.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        avgTimeField.setPreferredSize(new Dimension(260, 30));
+
+        pgbc.gridx = 0; pgbc.gridy = 2; pgbc.gridwidth = 2;
+        pgbc.insets = new Insets(20, 10, 10, 10);
+        pgbc.fill = GridBagConstraints.HORIZONTAL;
+        progressPanel.add(avgTimeField, pgbc);
+
+        mainPanel.add(progressPanel);
+
+        // ---- Button Actions for Tab 2 ----
+        
+        checkBtn.addActionListener(e -> {
+            String id = jobIdField.getText().trim();
+            if (id.isEmpty()) {
+              statusLabel.setText("ENTER ID");
+              statusLabel.setBackground(Color.GRAY);
+              statusLabel.setForeground(Color.WHITE);
+              return;
+          }
+          String status = controller.getJobStatus(id);
+          statusLabel.setText(status.toUpperCase());
+          statusLabel.setForeground(Color.WHITE); 
+
+          switch (status.toLowerCase()) {
+            case "completed":
+                statusLabel.setBackground(new Color(33, 150, 243)); // Blue
+                break;
+            case "in-progress": 
+                statusLabel.setBackground(new Color(255, 152, 0)); // Orange
+                break;
+            case "pending":
+                statusLabel.setBackground(new Color(255, 193, 7)); // Yellow
+                statusLabel.setForeground(Color.BLACK); 
+                break;
+            case "failed":
+                statusLabel.setBackground(new Color(244, 67, 54)); // Red
+                break;
+            default:
+                statusLabel.setBackground(Color.GRAY); 
+                statusLabel.setForeground(Color.WHITE);
+          }
+        });
+
+        triggerBtn.addActionListener(e -> {
+            Job selectJob = jobList.getSelectedValue();
+            if (selectJob == null) return;
+            controller.triggerCheckpoint(selectJob);
+            JOptionPane.showMessageDialog(this, "Checkpoint triggered for " + selectJob);
+        });
+
+        refreshBtn.addActionListener(e -> {
+          refreshBtn.setText("Refreshing...");
+          refreshJobList();
+        }
+        );
+
+        calcBtn.addActionListener(e -> {
+            
+            calcBtn.setEnabled(false); 
+            calcBtn.setText("Computing..."); 
+            avgTimeField.setText("Computing... please wait."); 
+            avgTimeField.setForeground(Color.BLUE); 
+
+            SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
+                @Override
+                protected String doInBackground() throws Exception {
+                    String result = controller.calculateCompletionTimes();
+                    return result; 
+                }
+
+                @Override
+                protected void done() {
+                    try {
+                        String result = get(); 
+                        avgTimeField.setText("Average Completion Time: " + result);
+                    } catch (Exception ex) {
+                        avgTimeField.setText("Error: Calculation failed.");
+                        ex.printStackTrace();
+                    } finally {
+                        calcBtn.setEnabled(true); 
+                        calcBtn.setText(defaultCalcBtnText); 
+                        avgTimeField.setForeground(Color.BLACK); 
+                    }
+                }
+            };
+            
+            worker.execute();
+        });
+
+        return mainPanel;
+    }
+
+    //refresh Helper
+    private void refreshJobList() {
+      listModel.clear();
+      for (Job job : controller.getInProgressJobs()) {
+          listModel.addElement(job);
+      }
+  }
+    
+    /**
+     * NEW: Creates the "Manage Billing" panel (Tab 3)
+     */
+    private JPanel createBillingPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10)); // Use BorderLayout
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        panel.setBackground(new Color(220, 240, 255));
+        
+        // Panel for the buttons
+        JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        topPanel.setOpaque(false);
+        addBillingButton = new JButton("Add Billing Info"); // Button text set in loadBillingInfo()
+        addBillingButton.setFont(new Font("SansSerif", Font.BOLD, 14));
+        addBillingButton.addActionListener(this::onAddBillingInfo);
+        
+        // --- NEW: Delete Button ---
+        JButton deleteBillingButton = new JButton("Delete Info");
+        deleteBillingButton.setFont(new Font("SansSerif", Font.PLAIN, 14));
+        deleteBillingButton.setBackground(new Color(244, 67, 54)); // Red
+        deleteBillingButton.setForeground(Color.BLACK);
+        deleteBillingButton.addActionListener(this::onDeleteBillingInfo);
+        
+        topPanel.add(addBillingButton);
+        topPanel.add(deleteBillingButton);
+        
+        panel.add(topPanel, BorderLayout.NORTH);
+
+        // --- NEW: Table to display saved info ---
+        billingTableModel = new DefaultTableModel(new Object[]{"Field", "Value"}, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false; // Make table non-editable
+            }
+        };
+        billingTable = new JTable(billingTableModel);
+        billingTable.setFont(new Font("SansSerif", Font.PLAIN, 14));
+        billingTable.setRowHeight(20);
+        billingTable.setTableHeader(null); // Hide header
+        
+        JScrollPane scrollPane = new JScrollPane(billingTable);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        return panel;
+    }
+
+
+    // --- HELPER METHODS ---
+    
+    /**
+     * NEW: Opens the Billing Info dialog.
+     */
+    private void onAddBillingInfo(ActionEvent e) {
+        if (billingDialog == null) {
+            billingDialog = new BillingInfoDialog(SwingUtilities.getWindowAncestor(this));
+        }
+        billingDialog.prefill(this.billingInfo); // Prefill with current data
+        billingDialog.setVisible(true); 
+
+        // After dialog is closed, check if billing info was saved
+        if (billingDialog.getSavedInfo() != null) {
+            this.billingInfo = billingDialog.getSavedInfo();
+            saveBillingInfo(); // Save to file
+            loadBillingInfo(); // Reload tab
+        }
+    }
+    
+    /**
+     * NEW: Deletes the billing info file.
+     */
+    private void onDeleteBillingInfo(ActionEvent e) {
+        if (billingInfo == null || billingInfo.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No billing info to delete.");
+            return;
+        }
+        
+        int choice = JOptionPane.showConfirmDialog(this, 
+                "Are you sure you want to delete your billing info?", 
+                "Confirm Deletion", 
+                JOptionPane.YES_NO_OPTION, 
+                JOptionPane.WARNING_MESSAGE);
+        
+        if (choice == JOptionPane.YES_OPTION) {
+            this.billingInfo = "";
+            saveBillingInfo(); // Save empty string (which deletes file content)
+            loadBillingInfo(); // Refresh tab
+            JOptionPane.showMessageDialog(this, "Billing Info Deleted.");
+        }
+    }
+
+    /**
+     * NEW: Called by "Submit Job" button.
+     * This is the "master" action. It submits, adds to table, and saves to file.
+     */
+    private void onSubmit(ActionEvent e) {
+        if (this.billingInfo == null || this.billingInfo.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Please add billing info (Tab 3) before submitting a job.", "Billing Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        
+        String clientId = clientIdField.getText().trim();
+        if (clientId.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Please fill in all fields.");
+            return;
+        }
+        
+        int redundancy = (Integer) redundancySpinner.getValue();
+        
+        LocalDateTime deadline;
+        try {
+            int year = (Integer) deadlineYearSpinner.getValue();
+            int month = (Integer) deadlineMonthSpinner.getValue();
+            int day = (Integer) deadlineDaySpinner.getValue();
+            int hour = (Integer) deadlineHourSpinner.getValue();
+            deadline = LocalDateTime.of(year, month, day, hour, 0);
+            
+            if (deadline.isBefore(LocalDateTime.now())) {
+                JOptionPane.showMessageDialog(this, "Deadline must be in the future.");
+                return;
+            }
+        } catch (DateTimeException ex) {
+            JOptionPane.showMessageDialog(this, "Invalid date (e.g., Feb 30).");
+            return;
+        }
+        
+        int durationAmount = (Integer) durationSpinner.getValue();
+        String durationUnit = String.valueOf(durationUnitBox.getSelectedItem());
+        int durationInHours = durationUnit.equals("days") ? (durationAmount * 24) : durationAmount;
+
+        // --- THIS IS WHERE YOUR NEW LOGIC GOES ---
+        Job newJob = new Job(clientId, durationInHours, redundancy, deadline);
+        controller.addJob(newJob);
+        
+        JOptionPane.showMessageDialog(this, "Job Submitted! Duration: " + durationInHours + " hours.");
+        
+        // --- NEW: Also add to list and save ---
+        // 1. Add to table
+        String ts = TS_FMT.format(LocalDateTime.now());
+        tableModel.addRow(new Object[]{ts, clientId, durationInHours, deadline.toString(), redundancy});
+        
+        // 2. Save this new entry to file
+        File out = new File(CSV_FILE);
+        boolean writeHeader = !out.exists() || out.length() == 0;
+        try (FileWriter fw = new FileWriter(out, true)) { // Append
+            if (writeHeader) {
+                 fw.write("timestamp,client_id,duration_hours,deadline,redundancy\n");
+            }
+            // Write new job
+            fw.write(ts + "," + clientId + "," + durationInHours + "," + escapeCsv(deadline.toString()) + "," + redundancy + "\n");
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(this, "Could not save job to file: " + ex.getMessage());
+        }
+    }
+
+
+    /** * Methods removed: onAdd, onSave, isIdInTable, getSavedJobSignatures ***/
+    
+    /**
+     * NEW: Loads all jobs from the user's CSV file into the table.
+     */
+    private void loadJobsFromCSV() {
+        File file = new File(CSV_FILE);
+        if (!file.exists()) {
+            return; // No file to load
+        }
+        
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            br.readLine(); // Skip header
+            
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(",");
+                if (values.length >= 5) {
+                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4]});
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(this, "Error loading job history from " + CSV_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+    
+    /**
+     * NEW: Loads this user's billing info from their text file.
+     */
+    private void loadBillingInfo() {
+        File file = new File(BILLING_FILE);
+        billingTableModel.setRowCount(0); // Clear table
+        
+        if (!file.exists()) {
+            addBillingButton.setText("Add Billing Info");
+            this.billingInfo = "";
+            return;
+        }
+        
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String loadedInfo = br.readLine();
+            if (loadedInfo != null && !loadedInfo.isEmpty()) {
+                this.billingInfo = loadedInfo;
+                String[] parts = billingInfo.split("\\|");
+                
+                if (parts.length == 5) {
+                    billingTableModel.addRow(new Object[]{"Name on Card", parts[0]});
+                    billingTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + parts[1].substring(12)});
+                    billingTableModel.addRow(new Object[]{"Expiry", parts[3] + "/" + parts[4]});
+                }
+                
+                addBillingButton.setText("Edit Billing Info");
+            } else {
+                 addBillingButton.setText("Add Billing Info");
+                 this.billingInfo = "";
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(this, "Error loading billing info from " + BILLING_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+    
+    /**
+     * NEW: Saves this user's billing info to their text file.
+     */
+    private void saveBillingInfo() {
+        try (FileWriter fw = new FileWriter(BILLING_FILE, false)) { // Overwrite
+            fw.write(this.billingInfo);
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this, "Error saving billing info file.", "Save Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    /** Clears all input fields. */
+    private void clearForm() {
+        clientIdField.setText("");
+        durationSpinner.setValue(1);
+        durationUnitBox.setSelectedIndex(0);
+        redundancySpinner.setValue(1); 
+        
+        LocalDateTime now = LocalDateTime.now().plusHours(1);
+        deadlineMonthSpinner.setValue(now.getMonthValue());
+        deadlineDaySpinner.setValue(now.getDayOfMonth());
+        deadlineYearSpinner.setValue(now.getYear());
+        deadlineHourSpinner.setValue(now.getHour());
+    }
+
+    /** Escapes commas, quotes, and newlines for CSV safety. */
+    private static String escapeCsv(String s) {
+        if (s.contains(",") || s.contains("\"") || s.contains("\n")) {
+            s = s.replace("\"", "\"\"");
+            return "\"" + s + "\"";
+        }
+        return s;
+    }
+
+    // --- NEW: Inner class for the Billing Info Dialog ---
+    private class BillingInfoDialog extends JDialog {
+        private JTextField nameField;
+        private JTextField cardField;
+        private JTextField cvcField;
+        private JTextField expMonthField;
+        private JTextField expYearField;
+        private String savedInfo; // Temp variable
+
+        BillingInfoDialog(Window owner) {
+            super(owner, "Add/Edit Billing Info", Dialog.ModalityType.APPLICATION_MODAL);
+            setSize(400, 300);
+            setLocationRelativeTo(owner);
+            setLayout(new GridBagLayout());
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.insets = new Insets(5, 5, 5, 5);
+            gbc.fill = GridBagConstraints.HORIZONTAL;
+
+            nameField = new JTextField(20);
+            ((AbstractDocument) nameField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
+
+            cardField = new JTextField(16);
+            ((AbstractDocument) cardField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(16));
+
+            cvcField = new JTextField(3);
+            ((AbstractDocument) cvcField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(3));
+            
+            expMonthField = new JTextField(2);
+            ((AbstractDocument) expMonthField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
+            
+            expYearField = new JTextField(2);
+            ((AbstractDocument) expYearField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
+
+            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Name on Card:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 0; add(nameField, gbc);
+
+            gbc.gridx = 0; gbc.gridy = 1; add(new JLabel("Card Number:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 1; add(cardField, gbc);
+
+            gbc.gridx = 0; gbc.gridy = 2; add(new JLabel("CVC:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 2; add(cvcField, gbc);
+
+            JPanel expPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+            expPanel.add(expMonthField);
+            expPanel.add(new JLabel("/"));
+            expPanel.add(expYearField);
+            
+            gbc.gridx = 0; gbc.gridy = 3; add(new JLabel("Expiry (MM/YY):"), gbc);
+            gbc.gridx = 1; gbc.gridy = 3; add(expPanel, gbc);
+            
+            JButton saveButton = new JButton("Save");
+            saveButton.addActionListener(this::onSaveBilling);
+            gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2; add(saveButton, gbc);
+        }
+        
+        public String getSavedInfo() {
+            return savedInfo;
+        }
+
+        public void prefill(String info) {
+            // Pre-fill fields if info already exists
+            if (info != null && !info.isEmpty()) {
+                String[] parts = info.split("\\|");
+                if (parts.length == 5) {
+                    nameField.setText(parts[0]);
+                    cardField.setText(parts[1]);
+                    cvcField.setText(parts[2]);
+                    expMonthField.setText(parts[3]);
+                    expYearField.setText(parts[4]);
+                }
+            } else {
+                // Clear fields if no info
+                nameField.setText("");
+                cardField.setText("");
+                cvcField.setText("");
+                expMonthField.setText("");
+                expYearField.setText("");
+            }
+            this.savedInfo = null; // Reset saved info
+        }
+
+        private void onSaveBilling(ActionEvent e) {
+            String name = nameField.getText().trim();
+            String card = cardField.getText().trim();
+            String cvc = cvcField.getText().trim();
+            String expMonth = expMonthField.getText().trim();
+            String expYear = expYearField.getText().trim();
+
+            if (name.isEmpty() || card.length() != 16 || cvc.length() != 3 || expMonth.length() != 2 || expYear.length() != 2) {
+                JOptionPane.showMessageDialog(this, "Please fill all fields correctly.\nCard Number must be 16 digits.\nCVC must be 3 digits.", "Validation Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            // Save the billing info in a simple format
+            this.savedInfo = name + "|" + card + "|" + cvc + "|" + expMonth + "|" + expYear;
+            
+            JOptionPane.showMessageDialog(this, "Billing Info Saved!");
+            dispose(); // Close the dialog
+        }
+    }
+
+
+    // --- DocumentFilter Inner Classes ---
+
+    /** Allows only letters/numbers up to a max length. */
+    private static class AlphanumericFilter extends DocumentFilter {
+        private final int maxLength;
+
+        public AlphanumericFilter(int maxLength) {
+            this.maxLength = maxLength;
+        }
+        
+        @Override
+        public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr)
+                throws BadLocationException {
+            if (string == null) return;
+            if (fb.getDocument().getLength() + string.length() > maxLength) {
+                Toolkit.getDefaultToolkit().beep();
+                return;
+            }
+            if (string.matches("[a-zA-Z0-9]+")) {
+                super.insertString(fb, offset, string, attr);
+            } else {
+                Toolkit.getDefaultToolkit().beep();
+            }
+        }
+
+        @Override
+        public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
+                throws BadLocationException {
+            if (text == null) return;
+            if (fb.getDocument().getLength() - length + text.length() > maxLength) {
+                Toolkit.getDefaultToolkit().beep();
+                return;
+            }
+            if (text.matches("[a-zA-Z0-9]*")) {
+                super.replace(fb, offset, length, text, attrs);
+            } else {
+                Toolkit.getDefaultToolkit().beep();
+            }
+        }
+    }
+    
+    /** NEW: Allows only letters, spaces, and hyphens. */
+    private static class LettersOnlyFilter extends DocumentFilter {
+        @Override
+        public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr)
+                throws BadLocationException {
+            if (string != null && string.matches("[a-zA-Z -]+")) {
+                super.insertString(fb, offset, string, attr);
+            } else if (string != null) {
+                Toolkit.getDefaultToolkit().beep();
+            }
+        }
+
+        @Override
+        public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
+                throws BadLocationException {
+            if (text != null && text.matches("[a-zA-Z -]*")) { // Allow empty string
+                super.replace(fb, offset, length, text, attrs);
+            } else if (text != null && !text.isEmpty()) {
+                Toolkit.getDefaultToolkit().beep();
+            }
+        }
+    }
+    
+    /** NEW: Allows only digits up to a max length. */
+    private static class NumbersOnlyFilter extends DocumentFilter {
+        private final int maxLength;
+
+        public NumbersOnlyFilter(int maxLength) {
+            this.maxLength = maxLength;
+        }
+
+        @Override
+        public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr)
+                throws BadLocationException {
+            if (string == null) return;
+            
+            if (fb.getDocument().getLength() + string.length() > maxLength) {
+                Toolkit.getDefaultToolkit().beep();
+                return;
+            }
+            
+            if (string.matches("\\d+")) {
+                super.insertString(fb, offset, string, attr);
+            } else {
+                Toolkit.getDefaultToolkit().beep();
+            }
+        }
+
+        @Override
+        public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
+                throws BadLocationException {
+            if (text == null) return;
+
+            if (fb.getDocument().getLength() - length + text.length() > maxLength) {
+                Toolkit.getDefaultToolkit().beep();
+                return;
+            }
+
+            if (text.matches("\\d*")) {
+                super.replace(fb, offset, length, text, attrs);
+            } else {
+                Toolkit.getDefaultToolkit().beep();
+            }
+        }
+    }
+}

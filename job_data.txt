@@ -22,3 +22,9 @@ Client ID: 5555
 Duration: 1 days
 Deadline: 10/16/25
 -------------------------
+Username: princetaller
+Timestamp: 2025-10-15 15:02:10
+Client ID: 123456
+Duration: 8 hours
+Deadline: 10 hrs
+-------------------------

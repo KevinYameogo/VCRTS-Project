@@ -3,7 +3,7 @@ import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import io.github.cdimascio.dotenv.Dotenv;
-// import io.github.cdimascio.dotenv.Dotenv; // Uncomment if you have dotenv setup
+
 
 public class LandingPage extends JFrame {
 
@@ -184,15 +184,15 @@ public class LandingPage extends JFrame {
             }
         });
 
-        // *** THIS IS THE KEY CHANGE ***
+        
         // show pages for each role(client or owner)
         loginButton.addActionListener(ev -> {
             int index = roleComboBox.getSelectedIndex();
             String username = usernameField.getText();
             String password = new String(passwordField.getPassword());
 
-            // A "Runnable" command that we will pass to the dashboard panels
-            // This command tells the CardLayout to show the "LOGIN" panel
+            //  pass to the dashboard panels
+    
             Runnable onLogout = () -> {
                 cardLayout.show(mainContentPanel, "LOGIN");
                 passwordField.setText("");

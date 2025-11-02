@@ -45,7 +45,7 @@ public class VCController {
       Job jobToAssign = pendingJobs.remove();
       assignJob(jobToAssign);
       inProgressJobs.add(jobToAssign);//move to progess
-      jobToAssign.updateStatus("In-Progess");
+      jobToAssign.updateStatus("In-Progress");
       System.out.println("Job " + jobToAssign.getJobID() + " started.");
 
     }else{
@@ -248,6 +248,46 @@ public class VCController {
       return "No Jobs pending in the queue.";
     }
     return output.toString();
+  }
+
+  /**
+   * Checks if a vehicle with the given signature is already in the system's
+   * live lists (either available or active).
+   */
+  public boolean isVehicleInSystem(String license, String state) {
+    String signature = license + state;
+    // Check available list
+    boolean inAvailable = availableVehicles.stream()
+            .anyMatch(vehicle -> vehicle.getSignature().equals(signature));
+            
+    if (inAvailable) {
+        return true; 
+    }
+
+    // Check active list
+    boolean inActive = activeVehicles.stream()
+            .anyMatch(vehicle -> vehicle.getSignature().equals(signature));
+
+    return inActive;
+  }
+
+  /**
+   * Checks if a Job ID already exists in any of the controller's lists.
+   */
+  public boolean isJobInSystem(String jobID) {
+    // Check pending jobs
+    if (pendingJobs.stream().anyMatch(job -> job.getJobID().equals(jobID))) {
+        return true;
+    }
+    // Check in-progress jobs
+    if (inProgressJobs.stream().anyMatch(job -> job.getJobID().equals(jobID))) {
+        return true;
+    }
+    // Check archived jobs
+    if (archivedJobs.stream().anyMatch(job -> job.getJobID().equals(jobID))) {
+        return true;
+    }
+    return false; 
   }
 
   //get inprogress jobs

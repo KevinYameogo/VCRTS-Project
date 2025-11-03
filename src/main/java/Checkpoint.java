@@ -1,12 +1,16 @@
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.io.Serializable;
 import java.util.UUID; // class to generate immutable + unique identifier
 
 
-public class Checkpoint {
+public class Checkpoint implements Serializable {
     private final String checkpointID;
     private final LocalDateTime timestamp;
     private final byte[] stateData;
+    private String vehicleID;
+
+    private static final long serialVersionUID = 1L;
 
     // Creates new checkpoint with random ID, current timestamp, and provided state data
     public Checkpoint(byte[] stateData) {
@@ -16,10 +20,11 @@ public class Checkpoint {
     }
 
     // Creates checkpoint with all values specified (for the purpose of restoring previous checkpoints)
-    public Checkpoint(String checkpointID, LocalDateTime timestamp, byte[] stateData) {
+    public Checkpoint(String checkpointID, LocalDateTime timestamp, byte[] stateData,String vehicleID) {
         this.checkpointID = (checkpointID == null) ? UUID.randomUUID().toString() : checkpointID;
         this.timestamp = (timestamp == null) ? LocalDateTime.now() : timestamp;
         this.stateData = (stateData == null) ? new byte[0] : Arrays.copyOf(stateData, stateData.length);
+        this.vehicleID = vehicleID;
     }
     // Getter method for checkpointID
     public String getCheckpointID() {
@@ -36,6 +41,9 @@ public class Checkpoint {
         return timestamp;
     }
 
+    public String getVehicleID(){
+        return this.vehicleID;
+    }
     @Override
     public String toString() {
         return "Checkpoint: " +

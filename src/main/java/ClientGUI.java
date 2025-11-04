@@ -1,3 +1,4 @@
+// ClientGUI.java (Job Status Box Final Fix)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.*;
@@ -12,12 +13,12 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * ClientGUI combines job submission, management, and billing into a 3-tab panel.
+ * ClientGUI combines job submission, management, billing, and password into a multi-tab panel.
  */
 public class ClientGUI extends JPanel {
 
     // --- USER INFO ---
-    private final String clientName;
+    private final Client clientUser; 
     private final Runnable onLogout;
 
     // --- TAB 1 (Submit Job) FIELDS ---
@@ -32,11 +33,17 @@ public class ClientGUI extends JPanel {
     private JSpinner deadlineHourSpinner;
 
     // --- TAB 3 (Billing) FIELDS ---
-    private String billingInfo;
+    private String billingInfo; // Local copy for persistence I/O
     private JButton addBillingButton;
     private JTable billingTable;
     private DefaultTableModel billingTableModel;
     private BillingInfoDialog billingDialog;
+
+    // --- TAB 4 (Password) FIELDS --- 
+    private JPasswordField oldPassField;
+    private JPasswordField newPassField;
+    private JPasswordField confirmNewPassField;
+    private JLabel passStatusLabel;
 
     private DefaultTableModel tableModel;
     private JTable table;
@@ -51,15 +58,17 @@ public class ClientGUI extends JPanel {
     // --- TAB 2 (Manage Job) FIELDS ---
     private VCController controller;
 
-    public ClientGUI(String clientName, Runnable onLogout, VCController controller) {
-        this.clientName = clientName;
+    public ClientGUI(Client clientUser, Runnable onLogout, VCController controller) { 
+        this.clientUser = clientUser; 
         this.onLogout = onLogout;
         this.controller = controller;
-        this.billingInfo = "";
+        
+        // Initialize local copy from Client object
+        this.billingInfo = clientUser.getBillingInfo(); 
 
-        // ---User-specific filenames ---
-        this.CSV_FILE = clientName + "_job_entries.csv";
-        this.BILLING_FILE = clientName + "_billing.dat";
+        // ---User-specific filenames now use the UserID---
+        this.CSV_FILE = clientUser.getUserID() + "_job_entries.csv"; 
+        this.BILLING_FILE = clientUser.getUserID() + "_billing.dat"; 
 
         setLayout(new BorderLayout());
 
@@ -67,6 +76,7 @@ public class ClientGUI extends JPanel {
         tabs.addTab("Submit New Job", createSubmitJobPanel());
         tabs.addTab("Manage Existing Jobs", createManageJobsPanel());
         tabs.addTab("Manage Billing", createBillingPanel());
+        tabs.addTab("Change Password", createPasswordPanel()); // NEW TAB
 
         add(tabs, BorderLayout.CENTER);
 
@@ -84,12 +94,14 @@ public class ClientGUI extends JPanel {
         root.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
         root.setBackground(new Color(220, 240, 255));
 
-        JLabel header = new JLabel("Job Submission Console  |  Welcome " + clientName, SwingConstants.CENTER);
+        // *** USE clientUser.getName() in welcome message ***
+        JLabel header = new JLabel("Job Submission Console  |  Welcome " + clientUser.getName(), SwingConstants.CENTER);
         header.setAlignmentX(Component.CENTER_ALIGNMENT);
         header.setFont(new Font("SansSerif", Font.BOLD, 18));
         root.add(header);
         root.add(Box.createVerticalStrut(10));
 
+        // ... (rest of form setup remains the same) ...
         JPanel form = new JPanel(new GridBagLayout());
         form.setOpaque(false);
         GridBagConstraints gc = new GridBagConstraints();
@@ -189,6 +201,7 @@ public class ClientGUI extends JPanel {
 
         logoutButton.addActionListener(e -> onLogout.run());
 
+
         return root;
     }
 
@@ -201,7 +214,8 @@ public class ClientGUI extends JPanel {
         mainPanel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
         mainPanel.setBackground(new Color(235, 235, 235));
 
-        JLabel header = new JLabel("Job Management  |  Welcome " + clientName, SwingConstants.CENTER);
+        // *** USE clientUser.getName() in welcome message ***
+        JLabel header = new JLabel("Job Management  |  Welcome " + clientUser.getName(), SwingConstants.CENTER);
         header.setAlignmentX(Component.CENTER_ALIGNMENT);
         header.setFont(new Font("SansSerif", Font.BOLD, 18));
         mainPanel.add(header);
@@ -215,33 +229,56 @@ public class ClientGUI extends JPanel {
         gbc.insets = new Insets(8, 8, 8, 8);
         gbc.anchor = GridBagConstraints.WEST;
 
+        // Job ID Label (Column 0)
         gbc.gridx = 0;
         gbc.gridy = 0;
+        gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
         checkStatusPanel.add(new JLabel("Job ID:"), gbc);
+        
+        // Job ID Field (Column 1 - Takes horizontal space)
         JTextField jobIdField = new JTextField(15);
         gbc.gridx = 1;
+        gbc.weightx = 1.0; // Pushes it to take available horizontal space
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         checkStatusPanel.add(jobIdField, gbc);
+        
+        // Check Status Button (Column 2 - Fixed size)
         JButton checkBtn = new JButton("Check Status");
         gbc.gridx = 2;
+        gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
         checkStatusPanel.add(checkBtn, gbc);
+        
+        // Status Label (Column 0, Row 1)
         gbc.gridx = 0;
         gbc.gridy = 1;
         checkStatusPanel.add(new JLabel("Status:"), gbc);
-        JLabel statusLabel = new JLabel("");
-        statusLabel.setOpaque(true);
-        statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        statusLabel.setPreferredSize(new Dimension(120, 28));
-        statusLabel.setBackground(Color.LIGHT_GRAY);
-        statusLabel.setForeground(Color.WHITE);
-        statusLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        statusLabel.setBorder(BorderFactory.createCompoundBorder(
+        
+        // Status Field (Column 1 & 2 - Spans two columns, fixed size)
+        final JTextField statusField = new JTextField();
+        statusField.setEditable(false);
+        statusField.setHorizontalAlignment(SwingConstants.CENTER);
+        // FIX: Increased size to 300px to fit long status messages
+        statusField.setPreferredSize(new Dimension(400, 28)); 
+        statusField.setBackground(Color.LIGHT_GRAY);
+        statusField.setForeground(Color.WHITE);
+        statusField.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        statusField.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Color.GRAY, 1, true),
                 BorderFactory.createEmptyBorder(4, 12, 4, 12)
         ));
+        
         gbc.gridx = 1;
         gbc.gridy = 1;
-        gbc.gridwidth = 2;
-        checkStatusPanel.add(statusLabel, gbc);
+        gbc.gridwidth = 1; // Span column 
+        gbc.weightx = 0.10; // Use fixed size
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.anchor = GridBagConstraints.WEST; // Anchor to the left in its spanned space
+        checkStatusPanel.add(statusField, gbc);
+        
+
+        
         mainPanel.add(checkStatusPanel);
         mainPanel.add(Box.createVerticalStrut(20));
 
@@ -249,7 +286,9 @@ public class ClientGUI extends JPanel {
         JPanel progressPanel = new JPanel(new GridBagLayout());
         progressPanel.setBorder(BorderFactory.createTitledBorder("In-Progress Jobs"));
         progressPanel.setOpaque(false);
+        
         GridBagConstraints pgbc = new GridBagConstraints();
+        
         pgbc.insets = new Insets(10, 10, 10, 10);
         pgbc.anchor = GridBagConstraints.NORTHWEST;
 
@@ -261,20 +300,30 @@ public class ClientGUI extends JPanel {
         jobList.setVisibleRowCount(5);
         JScrollPane scrollPane = new JScrollPane(jobList);
         scrollPane.setPreferredSize(new Dimension(180, 100));
+        
+        // List Box (Allow expansion in both directions)
         pgbc.gridx = 0;
         pgbc.gridy = 0;
-        pgbc.gridheight = 2;
+        pgbc.gridheight = 3; 
+        pgbc.weightx = 1.0; // Allow it to take horizontal space in its column
+        pgbc.weighty = 1.0; // Allow it to take vertical space
+        pgbc.fill = GridBagConstraints.BOTH; 
         progressPanel.add(scrollPane, pgbc);
-        JButton triggerBtn = new JButton("Trigger Checkpoint");
+        
+        // Buttons are in Column 1 (Reset weight)
         pgbc.gridx = 1;
-        pgbc.gridy = 0;
+        pgbc.weightx = 0; 
+        pgbc.weighty = 0; 
         pgbc.gridheight = 1;
-        pgbc.fill = GridBagConstraints.HORIZONTAL;
+        pgbc.fill = GridBagConstraints.HORIZONTAL; 
+
+        // Trigger button at (1, 0)
+        JButton triggerBtn = new JButton("Trigger Checkpoint");
+        pgbc.gridy = 0;
         progressPanel.add(triggerBtn, pgbc);
 
-        //refresh button
-        JButton refreshBtn = new JButton("Refresh Jobs List");
-        pgbc.gridx = 1;
+        // Refresh button at (1, 1) - Use shorter text as planned
+        JButton refreshBtn = new JButton("Refresh"); 
         pgbc.gridy = 1;
         progressPanel.add(refreshBtn, pgbc);
 
@@ -284,21 +333,23 @@ public class ClientGUI extends JPanel {
         final JButton calcBtn = new JButton("<html>Calculate All<br>Completion Times</html>");
         final String defaultCalcBtnText = "<html>Calculate All<br>Completion Times</html>";
 
-        pgbc.gridy = 1;
-        pgbc.insets = new Insets(20, 10, 10, 10);
+        // Place calc button at (1, 2)
+        pgbc.gridy = 2; 
+        pgbc.insets = new Insets(10, 10, 10, 10); // Resetting inset after vertical items
         progressPanel.add(calcBtn, pgbc);
 
-        // === RENAMED THIS FIELD ===
+        // === Status Field for Calculation ===
         final JTextField calcStatusField = new JTextField("Click button for pending job estimates.");
         calcStatusField.setEditable(false);
         calcStatusField.setBorder(BorderFactory.createEmptyBorder(6, 12, 6, 12));
         calcStatusField.setBackground(new Color(245, 245, 245));
         calcStatusField.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        calcStatusField.setPreferredSize(new Dimension(260, 30));
 
+        // Calculation Status Field (Span both columns)
         pgbc.gridx = 0;
-        pgbc.gridy = 2;
-        pgbc.gridwidth = 2;
+        pgbc.gridy = 3; 
+        pgbc.gridwidth = 2; 
+        pgbc.weightx = 1.0;
         pgbc.insets = new Insets(20, 10, 10, 10);
         pgbc.fill = GridBagConstraints.HORIZONTAL;
         progressPanel.add(calcStatusField, pgbc);
@@ -309,35 +360,41 @@ public class ClientGUI extends JPanel {
 
         checkBtn.addActionListener(e -> {
             String id = jobIdField.getText().trim();
+            
+            // FIX: Explicitly clear the status field before running the check
+            statusField.setText("");
+            
             if (id.isEmpty()) {
-                statusLabel.setText("ENTER ID");
-                statusLabel.setBackground(Color.GRAY);
-                statusLabel.setForeground(Color.WHITE);
+                statusField.setText("ENTER ID");
+                statusField.setBackground(Color.GRAY);
+                statusField.setForeground(Color.WHITE);
                 return;
             }
             String status = controller.getJobStatus(id);
-            statusLabel.setText(status.toUpperCase());
-            statusLabel.setForeground(Color.WHITE);
+            statusField.setText(status.toUpperCase());
+            statusField.setForeground(Color.WHITE);
 
+            // The status check logic is working as intended, just need to ensure the status is set
             switch (status.toLowerCase()) {
                 case "completed":
-                    statusLabel.setBackground(new Color(33, 150, 243)); // Blue
+                    statusField.setBackground(new Color(33, 150, 243)); // Blue
                     break;
                 case "in-progess": 
                 case "in-progress":
-                    statusLabel.setBackground(new Color(255, 152, 0)); // Orange
+                    statusField.setBackground(new Color(255, 152, 0)); // Orange
                     break;
                 case "pending":
                 case "pending(interrupted)":
-                    statusLabel.setBackground(new Color(255, 193, 7)); // Yellow
-                    statusLabel.setForeground(Color.BLACK);
+                    statusField.setBackground(new Color(255, 193, 7)); // Yellow
+                    statusField.setForeground(Color.BLACK); // Yellow needs black text
                     break;
                 case "failed":
-                    statusLabel.setBackground(new Color(244, 67, 54)); // Red
+                    statusField.setBackground(new Color(244, 67, 54)); // Red
                     break;
                 default: 
-                    statusLabel.setBackground(Color.GRAY);
-                    statusLabel.setForeground(Color.WHITE);
+                    // This handles "Job Not Found" which returns "N/A" or similar if controller is well-designed.
+                    statusField.setBackground(Color.GRAY);
+                    statusField.setForeground(Color.WHITE);
             }
         });
 
@@ -351,12 +408,19 @@ public class ClientGUI extends JPanel {
         refreshBtn.addActionListener(e -> {
                     refreshBtn.setText("Refreshing...");
                     refreshJobList();
-                    refreshBtn.setText("Refresh Jobs List");
+                    refreshBtn.setText("Refresh"); // Use shorter text
                 }
         );
 
         calcBtn.addActionListener(e -> {
-
+            
+            // FIX: Check if there are pending jobs before calling controller
+            if (controller.getPendingJobs().isEmpty()) {
+                calcStatusField.setText("No jobs pending to calculate.");
+                JOptionPane.showMessageDialog(this, "No jobs pending in the queue to calculate completion times.", "Info", JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            
             calcBtn.setEnabled(false);
             calcBtn.setText("Computing...");
             calcStatusField.setText("Computing... please wait.");
@@ -407,6 +471,7 @@ public class ClientGUI extends JPanel {
 
             worker.execute();
         });
+
 
         return mainPanel;
     }
@@ -462,6 +527,99 @@ public class ClientGUI extends JPanel {
         panel.add(scrollPane, BorderLayout.CENTER);
 
         return panel;
+    }
+    
+    /**
+     * Creates the "Change Password" panel (Tab 4) - NEW
+     */
+    private JPanel createPasswordPanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
+        panel.setBackground(new Color(220, 240, 255));
+        
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(8, 8, 8, 8);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        JLabel header = new JLabel("Change Your Login Password", SwingConstants.CENTER);
+        header.setFont(new Font("SansSerif", Font.BOLD, 18));
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.gridwidth = 2;
+        panel.add(header, gbc);
+        
+        // --- Fields ---
+        oldPassField = new JPasswordField(20);
+        newPassField = new JPasswordField(20);
+        confirmNewPassField = new JPasswordField(20);
+        JButton changeButton = new JButton("Set New Password");
+        changeButton.addActionListener(this::onChangePassword);
+        
+        passStatusLabel = new JLabel("Your password will be updated instantly.", SwingConstants.CENTER);
+        passStatusLabel.setForeground(Color.BLUE);
+        
+        int r = 1;
+        gbc.gridwidth = 1;
+        
+        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Current Password:"), gbc);
+        gbc.gridx = 1; gbc.gridy = r++; panel.add(oldPassField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("New Password:"), gbc);
+        gbc.gridx = 1; gbc.gridy = r++; panel.add(newPassField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Confirm New Password:"), gbc);
+        gbc.gridx = 1; gbc.gridy = r++; panel.add(confirmNewPassField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
+        
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(changeButton, gbc); r++;
+        
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
+
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(passStatusLabel, gbc); r++;
+
+
+        return panel;
+    }
+
+    /**
+     * Logic for changing and saving the new password. - NEW
+     */
+    private void onChangePassword(ActionEvent e) {
+        String currentPass = new String(oldPassField.getPassword());
+        String newPass = new String(newPassField.getPassword());
+        String confirmPass = new String(confirmNewPassField.getPassword());
+
+        if (!currentPass.equals(clientUser.getPassword())) {
+            passStatusLabel.setForeground(Color.RED);
+            passStatusLabel.setText("Error: Current Password is incorrect.");
+            return;
+        }
+
+        if (newPass.length() < 6) {
+            passStatusLabel.setForeground(Color.RED);
+            passStatusLabel.setText("Error: New password must be at least 6 characters long.");
+            return;
+        }
+
+        if (!newPass.equals(confirmPass)) {
+            passStatusLabel.setForeground(Color.RED);
+            passStatusLabel.setText("Error: New Password and Confirmation do not match.");
+            return;
+        }
+
+        // Update the User object and save it immediately
+        clientUser.setPassword(newPass);
+        // Uses the new persistence layer to save the updated user object with the new password
+        FileBasedUserStore.saveUser(clientUser); 
+
+        passStatusLabel.setForeground(new Color(34, 139, 34)); // Forest Green
+        passStatusLabel.setText("Password successfully updated! New password is now active.");
+        
+        // Clear fields
+        oldPassField.setText("");
+        newPassField.setText("");
+        confirmNewPassField.setText("");
     }
 
 
@@ -641,6 +799,7 @@ public class ClientGUI extends JPanel {
         if (!file.exists()) {
             addBillingButton.setText("Add Billing Info");
             this.billingInfo = "";
+            clientUser.setBillingInfo(""); 
             return;
         }
 
@@ -648,6 +807,7 @@ public class ClientGUI extends JPanel {
             String loadedInfo = br.readLine();
             if (loadedInfo != null && !loadedInfo.isEmpty()) {
                 this.billingInfo = loadedInfo;
+                clientUser.setBillingInfo(loadedInfo); 
                 String[] parts = billingInfo.split("\\|");
 
                 if (parts.length == 5) {
@@ -660,6 +820,7 @@ public class ClientGUI extends JPanel {
             } else {
                 addBillingButton.setText("Add Billing Info");
                 this.billingInfo = "";
+                clientUser.setBillingInfo(""); 
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -671,6 +832,7 @@ public class ClientGUI extends JPanel {
      *Saves this user's billing info to their text file.
      */
     private void saveBillingInfo() {
+        clientUser.setBillingInfo(this.billingInfo); 
         try (FileWriter fw = new FileWriter(BILLING_FILE, false)) { // Overwrite
             fw.write(this.billingInfo);
         } catch (IOException ex) {

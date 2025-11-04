@@ -1,3 +1,4 @@
+// OwnerGUI.java (FIXED: Removed validation requiring Owner ID to match logged-in User ID)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.AbstractDocument;
@@ -15,11 +16,11 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * OwnerGUI is a JPanel that allows vehicle owners to manage their vehicles.
+ * OwnerGUI is a JPanel that allows vehicle owners to manage their vehicles and their password.
  */
 public class OwnerGUI extends JPanel {
 
-    private final String ownerName;
+    private final Owner ownerUser; // Stored the rich object
     private final Runnable onLogout;
 
     // --- TAB 1 (Register) FIELDS ---
@@ -35,16 +36,21 @@ public class OwnerGUI extends JPanel {
     private JComboBox<String> stateComboBox;
 
     // --- TAB 2 (Payment) FIELDS ---
-    private String paymentInfo;
+    private String paymentInfo; 
     private JButton addPaymentButton; 
     private JTable paymentTable;
     private DefaultTableModel paymentTableModel;
     private PaymentInfoDialog paymentDialog;
+    
+    // --- TAB 3 (Password) FIELDS --- 
+    private JPasswordField oldPassField;
+    private JPasswordField newPassField;
+    private JPasswordField confirmNewPassField;
+    private JLabel passStatusLabel;
 
     private DefaultTableModel tableModel;
     private JTable table;
 
-    //
     private VCController controller;
 
     // --- FILENAMES ---
@@ -53,31 +59,31 @@ public class OwnerGUI extends JPanel {
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    // --- NEW: List of states ---
     private static final String[] STATES = {"", "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
             "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
             "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
             "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"};
 
-    public OwnerGUI(String ownerName, Runnable onLogout, VCController controller) {
-        this.ownerName = ownerName;
+    public OwnerGUI(Owner ownerUser, Runnable onLogout, VCController controller) { 
+        this.ownerUser = ownerUser; 
         this.onLogout = onLogout;
-        this.paymentInfo = "";
+        this.controller = controller;
+        
+        // Initialize local copy from Owner object
+        this.paymentInfo = ownerUser.getPaymentInfo();
 
-        this.CSV_FILE = ownerName + "_vehicle_entries.csv";
-        this.PAYMENT_FILE = ownerName + "_payment.dat";
+        this.CSV_FILE = ownerUser.getUserID() + "_vehicle_entries.csv"; 
+        this.PAYMENT_FILE = ownerUser.getUserID() + "_payment.dat";
 
         this.setLayout(new BorderLayout());
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("Register Vehicle", createRegisterVehiclePanel());
         tabs.addTab("Manage Payment", createPaymentPanel());
+        tabs.addTab("Change Password", createPasswordPanel()); // ADDED PASSWORD TAB
 
         this.add(tabs, BorderLayout.CENTER);
 
-        this.controller = controller;
-
-        // This loads the table AND restores the controller's state
         loadVehiclesFromCSV();
         loadPaymentInfo();
     }
@@ -91,13 +97,14 @@ public class OwnerGUI extends JPanel {
         rootPanel.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
         rootPanel.setBackground(new Color(187, 213, 237));
 
-        JLabel header = new JLabel("Vehicle Registration  |  Welcome " + ownerName, SwingConstants.CENTER);
+        // Use ownerUser.getName()
+        JLabel header = new JLabel("Vehicle Registration  |  Welcome " + ownerUser.getName(), SwingConstants.CENTER);
         header.setAlignmentX(Component.CENTER_ALIGNMENT);
         header.setFont(new Font("SansSerif", Font.BOLD, 18));
         rootPanel.add(header);
         rootPanel.add(Box.createVerticalStrut(10));
 
-        // form
+        // form setup (original code structure)
         JPanel form = new JPanel(new GridBagLayout());
         form.setOpaque(false);
         GridBagConstraints gc = new GridBagConstraints();
@@ -106,7 +113,12 @@ public class OwnerGUI extends JPanel {
 
         // --- Initialize Fields ---
         ownerIdField = new JTextField();
+        // The filter is kept to enforce the 4-character limit
         ((AbstractDocument) ownerIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(4));
+        
+        // FIX: Ensure the field starts empty if it is editable
+        ownerIdField.setText("");
+        // FIX: The field is now editable by default, as the setEditable(false) line was removed.
 
         makeField = new JTextField();
         ((AbstractDocument) makeField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
@@ -114,13 +126,14 @@ public class OwnerGUI extends JPanel {
         modelField = new JTextField();
         ((AbstractDocument) modelField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
 
+        
         LocalDateTime now = LocalDateTime.now();
         yearSpinner = new JSpinner(new SpinnerNumberModel(now.getYear(), 1980, now.getYear(), 1));
-        yearSpinner.setPreferredSize(new Dimension(100, 28)); // Fix size
+        yearSpinner.setPreferredSize(new Dimension(100, 28)); 
 
         licenseField = new JTextField();
         ((AbstractDocument) licenseField.getDocument()).setDocumentFilter(new LicensePlateFilter());
-        licenseField.setPreferredSize(new Dimension(100, 28)); // Fix size
+        licenseField.setPreferredSize(new Dimension(100, 28)); 
 
         stateComboBox = new JComboBox<>(STATES);
 
@@ -134,7 +147,8 @@ public class OwnerGUI extends JPanel {
 
         gc.gridx = 0;
         gc.gridy = r;
-        form.add(new JLabel("Owner ID (4 Chars):"), gc);
+        // FIX: Removed "(Your Login ID)" text
+        form.add(new JLabel("Owner ID (4 Chars):"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
         form.add(ownerIdField, gc);
@@ -165,20 +179,24 @@ public class OwnerGUI extends JPanel {
 
         JPanel licensePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         licensePanel.setOpaque(false);
-        JPanel licenseWrap = new JPanel(new BorderLayout());
-        licenseWrap.setOpaque(false);
-        licenseWrap.add(licenseField, BorderLayout.CENTER);
 
-        licensePanel.add(licenseWrap);
-        licensePanel.add(new JLabel("State:"));
-        licensePanel.add(stateComboBox);
-
+        // License Plate row (Simplified layout logic retained from last change for alignment)
         gc.gridx = 0;
         gc.gridy = r;
         form.add(new JLabel("License Plate:"), gc);
+
         gc.gridx = 1;
+        gc.gridy = r;
+        form.add(licenseField, gc);
+
+        // State field in next column (aligned row)
+        gc.gridx = 2;
+        gc.gridy = r;
+        form.add(new JLabel("State:"), gc);
+
+        gc.gridx = 3;
         gc.gridy = r++;
-        form.add(licensePanel, gc);
+        form.add(stateComboBox, gc);
 
 
         JPanel departurePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
@@ -212,7 +230,7 @@ public class OwnerGUI extends JPanel {
 
         gc.gridx = 0;
         gc.gridy = r;
-        gc.gridwidth = 2;
+        gc.gridwidth = 4; // Spanning more columns due to the license/state layout change
         form.add(buttons, gc);
 
         rootPanel.add(form);
@@ -231,7 +249,7 @@ public class OwnerGUI extends JPanel {
         registerButton.addActionListener(this::onRegister);
         clearButton.addActionListener(e -> clearForm());
         logoutButton.addActionListener(e -> onLogout.run());
-
+        
         return rootPanel;
     }
 
@@ -279,6 +297,103 @@ public class OwnerGUI extends JPanel {
 
         return panel;
     }
+
+    /**
+     * Creates the "Change Password" panel (Tab 3)
+     */
+    private JPanel createPasswordPanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
+        panel.setBackground(new Color(187, 213, 237));
+        
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(8, 8, 8, 8);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        JLabel header = new JLabel("Change Your Login Password", SwingConstants.CENTER);
+        header.setFont(new Font("SansSerif", Font.BOLD, 18));
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.gridwidth = 2;
+        panel.add(header, gbc);
+        
+        // --- Fields ---
+        oldPassField = new JPasswordField(20);
+        newPassField = new JPasswordField(20);
+        confirmNewPassField = new JPasswordField(20);
+        JButton changeButton = new JButton("Set New Password");
+        changeButton.addActionListener(this::onChangePassword);
+        
+        passStatusLabel = new JLabel("Your password will be updated instantly.", SwingConstants.CENTER);
+        passStatusLabel.setForeground(Color.BLUE);
+        
+        int r = 1;
+        gbc.gridwidth = 1;
+        
+        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Current Password:"), gbc);
+        gbc.gridx = 1; gbc.gridy = r++; panel.add(oldPassField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("New Password:"), gbc);
+        gbc.gridx = 1; gbc.gridy = r++; panel.add(newPassField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Confirm New Password:"), gbc);
+        gbc.gridx = 1; gbc.gridy = r++; panel.add(confirmNewPassField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
+        
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(changeButton, gbc); r++;
+        
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
+
+        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(passStatusLabel, gbc); r++;
+
+
+        return panel;
+    }
+    
+    /**
+     * Logic for changing and saving the new password.
+     */
+    private void onChangePassword(ActionEvent e) {
+        String currentPass = new String(oldPassField.getPassword());
+        String newPass = new String(newPassField.getPassword());
+        String confirmPass = new String(confirmNewPassField.getPassword());
+
+        // 1. Check if the current password matches the one stored in the User object
+        if (!currentPass.equals(ownerUser.getPassword())) {
+            passStatusLabel.setForeground(Color.RED);
+            passStatusLabel.setText("Error: Current Password is incorrect.");
+            return;
+        }
+
+        // 2. Validate new password
+        if (newPass.length() < 6) {
+            passStatusLabel.setForeground(Color.RED);
+            passStatusLabel.setText("Error: New password must be at least 6 characters long.");
+            return;
+        }
+
+        // 3. Check confirmation
+        if (!newPass.equals(confirmPass)) {
+            passStatusLabel.setForeground(Color.RED);
+            passStatusLabel.setText("Error: New Password and Confirmation do not match.");
+            return;
+        }
+
+        // 4. Success: Update User object and save
+        ownerUser.setPassword(newPass);
+        // NOTE: Owner is the subclass of User, so FileBasedUserStore must be called with the subclass object.
+        FileBasedUserStore.saveUser(ownerUser); 
+
+        passStatusLabel.setForeground(new Color(34, 139, 34)); // Forest Green
+        passStatusLabel.setText("Password successfully updated! New password is now active.");
+        
+        // Clear fields
+        oldPassField.setText("");
+        newPassField.setText("");
+        confirmNewPassField.setText("");
+    }
+
 
     /**
      * Opens the Payment Info dialog.
@@ -338,8 +453,12 @@ public class OwnerGUI extends JPanel {
         String license = licenseField.getText().trim();
         String state = String.valueOf(stateComboBox.getSelectedItem());
 
+        // --- FIX APPLIED HERE: REMOVE THE VALIDATION CHECK ---
+        // The previous code block requiring: ownerId.equals(ownerUser.getUserID()) is gone.
+        // This allows any valid 4-char Owner ID to be used for registration.
+        
         if (ownerId.isEmpty() || make.isEmpty() || model.isEmpty() || license.isEmpty() || state.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Please fill in all vehicle fields, including state.");
+            JOptionPane.showMessageDialog(this, "Please fill in all vehicle fields, including state and Owner ID.");
             return;
         }
 
@@ -463,6 +582,7 @@ public class OwnerGUI extends JPanel {
         if (!file.exists()) {
             addPaymentButton.setText("Add Payment Info");
             this.paymentInfo = "";
+            ownerUser.setPaymentInfo(""); 
             return;
         }
 
@@ -470,6 +590,7 @@ public class OwnerGUI extends JPanel {
             String loadedInfo = br.readLine();
             if (loadedInfo != null && !loadedInfo.isEmpty()) {
                 this.paymentInfo = loadedInfo;
+                ownerUser.setPaymentInfo(loadedInfo); 
                 String[] parts = paymentInfo.split("\\|");
 
                 if (parts.length == 5) {
@@ -482,6 +603,7 @@ public class OwnerGUI extends JPanel {
             } else {
                 addPaymentButton.setText("Add Payment Info");
                 this.paymentInfo = "";
+                ownerUser.setPaymentInfo(""); 
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -493,6 +615,7 @@ public class OwnerGUI extends JPanel {
      * Saves this user's payment info to their text file.
      */
     private void savePaymentInfo() {
+        ownerUser.setPaymentInfo(this.paymentInfo); 
         try (FileWriter fw = new FileWriter(PAYMENT_FILE, false)) { // Overwrite
             fw.write(this.paymentInfo);
         } catch (IOException ex) {
@@ -502,7 +625,8 @@ public class OwnerGUI extends JPanel {
     }
 
     private void clearForm() {
-        ownerIdField.setText("");
+        // Now clears the field since it is editable
+        ownerIdField.setText(""); 
         makeField.setText("");
         modelField.setText("");
         licenseField.setText("");
@@ -617,7 +741,7 @@ public class OwnerGUI extends JPanel {
                 nameField.setText("");
                 cardField.setText("");
                 cvcField.setText("");
-                expMonthField.setText("");
+                    expMonthField.setText("");
                 expYearField.setText("");
             }
             this.savedInfo = null;

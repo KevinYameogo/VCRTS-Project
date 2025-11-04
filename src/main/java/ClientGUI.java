@@ -1,4 +1,4 @@
-// ClientGUI.java (Job Status Box Final Fix)
+// ClientGUI.java (FIXED: Job ID is now unique and system-generated upon submission)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.*;
@@ -11,6 +11,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * ClientGUI combines job submission, management, billing, and password into a multi-tab panel.
@@ -22,7 +23,8 @@ public class ClientGUI extends JPanel {
     private final Runnable onLogout;
 
     // --- TAB 1 (Submit Job) FIELDS ---
-    private JTextField clientIdField;
+    // Renamed field to reflect it only holds the secure, non-editable client ID
+    private JTextField clientSecureIdField; 
     private JSpinner durationSpinner;
     private JComboBox<String> durationUnitBox;
     private JSpinner redundancySpinner;
@@ -57,6 +59,9 @@ public class ClientGUI extends JPanel {
 
     // --- TAB 2 (Manage Job) FIELDS ---
     private VCController controller;
+    
+    // --- JOB ID GENERATION HELPER ---
+    private static final DateTimeFormatter JOB_ID_TS_FMT = DateTimeFormatter.ofPattern("HHmmss");
 
     public ClientGUI(Client clientUser, Runnable onLogout, VCController controller) { 
         this.clientUser = clientUser; 
@@ -109,8 +114,13 @@ public class ClientGUI extends JPanel {
         gc.fill = GridBagConstraints.HORIZONTAL;
 
         // Initialize fields
-        clientIdField = new JTextField();
-        ((AbstractDocument) clientIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(4));
+        clientSecureIdField = new JTextField();
+        // 1. Set the fixed, secure Client ID from the logged-in user
+        clientSecureIdField.setText(clientUser.getSecureClientID());
+        // 2. Lock the field, preventing user modification or deletion
+        clientSecureIdField.setEditable(false); 
+        
+        // NOTE: The separate jobIdInput field is REMOVED as Job ID is now system generated.
 
         durationSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10000, 1));
         durationUnitBox = new JComboBox<>(new String[]{"hours", "days"});
@@ -123,13 +133,18 @@ public class ClientGUI extends JPanel {
         deadlineHourSpinner = new JSpinner(new SpinnerNumberModel(now.getHour(), 0, 23, 1));
 
         int r = 0;
+        
+        // --- ROW 0: CLIENT ID (Fixed) ---
         gc.gridx = 0;
         gc.gridy = r;
-        form.add(new JLabel("Job ID (4 Chars):"), gc);
+        // FIX: Updated label to reflect the fixed, secure ID
+        form.add(new JLabel("Your Client ID (Fixed):"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
-        form.add(clientIdField, gc);
+        form.add(clientSecureIdField, gc); // Display the fixed client ID
 
+        // Note: The previous Job ID row is now removed, the next row is duration.
+        
         JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         durationPanel.setOpaque(false);
         durationPanel.add(durationSpinner);
@@ -187,9 +202,10 @@ public class ClientGUI extends JPanel {
         root.add(Box.createVerticalStrut(12));
 
         // === TABLE PANEL ===
+        // Update table model columns to show Client ID and Job ID separately
         tableModel = new DefaultTableModel(new Object[]{
-                "Timestamp", "Job ID", "Duration (Hours)", "Deadline", "Redundancy"
-        }, 0);
+                "Timestamp", "Client ID", "Job ID", "Duration (Hours)", "Deadline", "Redundancy"
+        }, 0); 
         table = new JTable(tableModel);
         JScrollPane tableScroll = new JScrollPane(table);
         tableScroll.setPreferredSize(new Dimension(760, 260));
@@ -676,15 +692,20 @@ public class ClientGUI extends JPanel {
             return;
         }
 
-        String clientId = clientIdField.getText().trim();
-        if (clientId.isEmpty() || clientId.length() != 4) {
-            JOptionPane.showMessageDialog(this, "Please fill in all fields. Job ID must be 4 characters.", "Input Error", JOptionPane.ERROR_MESSAGE);
+        // --- FIX: GENERATE UNIQUE JOB ID AND USE FIXED CLIENT ID ---
+        String clientID = clientUser.getSecureClientID(); // Fixed, secure ID
+        // Generate a new unique ID for this specific job submission
+        String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
+
+        if (clientID.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Client ID is missing. Please re-login.", "System Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        // *** DUPLICATE JOB ID CHECK ***
-        if (controller.isJobInSystem(clientId)) {
-            JOptionPane.showMessageDialog(this, "A job with ID '" + clientId + "' already exists in the system (pending, in-progress, or archived).", "Duplicate Job ID", JOptionPane.ERROR_MESSAGE);
+        // *** UNIQUE JOB ID CHECK (Now checks the newly generated ID) ***
+        if (controller.isJobInSystem(jobID)) {
+            // Highly unlikely given the timestamp/random suffix, but good to check.
+            JOptionPane.showMessageDialog(this, "A job with ID '" + jobID + "' already exists in the system. Try again.", "Duplicate Job ID", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
@@ -714,25 +735,27 @@ public class ClientGUI extends JPanel {
         // Save deadline in ISO format (parsable)
         String deadlineString = deadline.toString();
 
-        Job newJob = new Job(clientId, durationInHours, redundancy, deadline);
+        // Create Job using the unique Job ID (jobID)
+        Job newJob = new Job(jobID, durationInHours, redundancy, deadline);
         controller.addJob(newJob);
 
-        JOptionPane.showMessageDialog(this, "Job Submitted! Duration: " + durationInHours + " hours.");
+        JOptionPane.showMessageDialog(this, "Job Submitted! ID: " + jobID + ", Duration: " + durationInHours + " hours.");
 
         // --- Also add to list and save ---
-        // 1. Add to table
+        // 1. Add to table: Logging Client ID (clientID) and Job ID (jobID)
         String ts = TS_FMT.format(LocalDateTime.now());
-        tableModel.addRow(new Object[]{ts, clientId, durationInHours, deadlineString, redundancy});
+        tableModel.addRow(new Object[]{ts, clientID, jobID, durationInHours, deadlineString, redundancy});
 
-        // 2. Save this new entry to file
+        // 2. Save this new entry to file 
         File out = new File(CSV_FILE);
         boolean writeHeader = !out.exists() || out.length() == 0;
         try (FileWriter fw = new FileWriter(out, true)) {
             if (writeHeader) {
-                fw.write("timestamp,client_id,duration_hours,deadline,redundancy\n");
+                // ADDED job_id to the header
+                fw.write("timestamp,client_id,job_id,duration_hours,deadline,redundancy\n");
             }
-            // Write new job
-            fw.write(ts + "," + clientId + "," + durationInHours + "," + escapeCsv(deadlineString) + "," + redundancy + "\n");
+            // Write new job: Now logging Client ID and Job ID
+            fw.write(ts + "," + clientID + "," + jobID + "," + durationInHours + "," + escapeCsv(deadlineString) + "," + redundancy + "\n");
         } catch (IOException ex) {
             JOptionPane.showMessageDialog(this, "Could not save job to file: " + ex.getMessage());
         }
@@ -752,30 +775,31 @@ public class ClientGUI extends JPanel {
 
         try (BufferedReader br = new BufferedReader(new FileReader(file))) {
             String line;
-            br.readLine(); 
+            br.readLine(); // Skip header
 
             while ((line = br.readLine()) != null) {
                 String[] values = line.split(",");
-                if (values.length >= 5) {
+                // Expecting 6 values now: timestamp, client_id, job_id, duration_hours, deadline, redundancy
+                if (values.length >= 6) { 
                     // 1. Add to table for historical view 
-                    // "timestamp,client_id,duration_hours,deadline,redundancy"
-                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4]});
+                    // Columns: "Timestamp", "Client ID", "Job ID", "Duration (Hours)", "Deadline", "Redundancy"
+                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4], values[5]});
 
                     // 2. Restore job to controller if it should be active
                     try {
-                        String clientId = values[1];
-                        int durationInHours = Integer.parseInt(values[2]);
-                        String deadlineString = values[3].replace("\"", ""); // Basic un-escape
+                        // Job ID is values[2]
+                        String jobID = values[2];
+                        int durationInHours = Integer.parseInt(values[3]);
+                        String deadlineString = values[4].replace("\"", ""); // Basic un-escape
                         LocalDateTime deadline = LocalDateTime.parse(deadlineString); // Parse ISO string
-                        int redundancy = Integer.parseInt(values[4]);
+                        int redundancy = Integer.parseInt(values[5]);
 
                         // If deadline is in the future AND the job isn't already in the system
-                        // ie: it hasn't been completed/archived
-                        if (deadline.isAfter(LocalDateTime.now()) && !controller.isJobInSystem(clientId)) {
-                            // Re-create the job and add it back to the pending queue
-                            Job jobToRestore = new Job(clientId, durationInHours, redundancy, deadline);
+                        if (deadline.isAfter(LocalDateTime.now()) && !controller.isJobInSystem(jobID)) {
+                            // Re-create the job using the unique Job ID
+                            Job jobToRestore = new Job(jobID, durationInHours, redundancy, deadline);
                             controller.addJob(jobToRestore); // This re-adds it as "Pending"
-                            System.out.println("Restored persistent job to controller: " + clientId);
+                            System.out.println("Restored persistent job to controller: " + jobID);
                         }
 
                     } catch (DateTimeParseException | NumberFormatException e) {
@@ -843,7 +867,7 @@ public class ClientGUI extends JPanel {
 
     /** Clears all input fields. */
     private void clearForm() {
-        clientIdField.setText("");
+        // clientSecureIdField is non-editable and system-set, do not clear.
         durationSpinner.setValue(1);
         durationUnitBox.setSelectedIndex(0);
         redundancySpinner.setValue(1);

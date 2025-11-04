@@ -1,4 +1,4 @@
-// OwnerGUI.java (FIXED: Removed validation requiring Owner ID to match logged-in User ID)
+// OwnerGUI.java (FIXED: Owner ID is now fixed, secure, 6-character, and non-editable)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.AbstractDocument;
@@ -113,13 +113,15 @@ public class OwnerGUI extends JPanel {
 
         // --- Initialize Fields ---
         ownerIdField = new JTextField();
-        // The filter is kept to enforce the 4-character limit
-        ((AbstractDocument) ownerIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(4));
         
-        // FIX: Ensure the field starts empty if it is editable
-        ownerIdField.setText("");
-        // FIX: The field is now editable by default, as the setEditable(false) line was removed.
-
+        // --- FIX: SET SECURE ID AND MAKE NON-EDITABLE ---
+        // 1. Set the fixed, secure Owner ID from the logged-in user
+        ownerIdField.setText(ownerUser.getSecureOwnerID());
+        // 2. Lock the field, preventing user modification or deletion
+        ownerIdField.setEditable(false);
+        // 3. Remove the filter, as it restricted the new 6-char, special character ID
+        // ((AbstractDocument) ownerIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(4));
+        
         makeField = new JTextField();
         ((AbstractDocument) makeField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
 
@@ -147,8 +149,8 @@ public class OwnerGUI extends JPanel {
 
         gc.gridx = 0;
         gc.gridy = r;
-        // FIX: Removed "(Your Login ID)" text
-        form.add(new JLabel("Owner ID (4 Chars):"), gc); 
+        // FIX: Updated label to reflect the fixed, secure, 6-character ID
+        form.add(new JLabel("Owner ID:"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
         form.add(ownerIdField, gc);
@@ -446,19 +448,18 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
+        // --- FIX: Use the non-editable, secured Owner ID ---
         String ownerId = ownerIdField.getText().trim();
+        
         String make = makeField.getText().trim();
         String model = modelField.getText().trim();
         int year = (Integer) yearSpinner.getValue();
         String license = licenseField.getText().trim();
         String state = String.valueOf(stateComboBox.getSelectedItem());
 
-        // --- FIX APPLIED HERE: REMOVE THE VALIDATION CHECK ---
-        // The previous code block requiring: ownerId.equals(ownerUser.getUserID()) is gone.
-        // This allows any valid 4-char Owner ID to be used for registration.
-        
+        // We only check if other fields are empty, the ownerId is guaranteed to be set
         if (ownerId.isEmpty() || make.isEmpty() || model.isEmpty() || license.isEmpty() || state.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Please fill in all vehicle fields, including state and Owner ID.");
+            JOptionPane.showMessageDialog(this, "Please fill in all vehicle fields.");
             return;
         }
 
@@ -625,8 +626,8 @@ public class OwnerGUI extends JPanel {
     }
 
     private void clearForm() {
-        // Now clears the field since it is editable
-        ownerIdField.setText(""); 
+        // FIX: Owner ID is now non-editable, so we don't attempt to clear it.
+        // ownerIdField.setText(""); 
         makeField.setText("");
         modelField.setText("");
         licenseField.setText("");

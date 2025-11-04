@@ -1,11 +1,12 @@
-// LandingPage.java (FINAL FIX: Implements 'Generate Pass' on login view)
+// LandingPage.java (FINAL FIX: Implements 'Generate Pass' on login view, handles Client/Owner secure IDs)
 import javax.swing.*;
 import java.awt.*;
 import io.github.cdimascio.dotenv.Dotenv;
 import java.io.*;
 import java.util.Random; 
 
-// NOTE: Assumes all model classes (User, Client, VehicleOwner) and FileBasedUserStore are available
+// NOTE: Assumes all model classes (User, Client, Owner) and FileBasedUserStore, 
+// and the new ClientIDGenerator/OwnerIDGenerator are available.
 
 public class LandingPage extends JFrame {
 
@@ -232,6 +233,28 @@ public class LandingPage extends JFrame {
         if (userFromFile != null) {
             // File Found: Authenticate against the file-stored password
             if (userFromFile.getPassword().equals(password)) {
+                
+                // NEW: FIX for Client and Owner - ensure secure ID is assigned upon file load
+                if (userFromFile instanceof Owner) {
+                    Owner owner = (Owner) userFromFile;
+                    // Check if the secureOwnerID is null or empty
+                    if (owner.getSecureOwnerID() == null || owner.getSecureOwnerID().isEmpty()) {
+                        String newID = OwnerIDGenerator.generateRandomID();
+                        owner.setSecureOwnerID(newID);
+                        FileBasedUserStore.saveUser(owner); // Resave the object with the new ID
+                        System.out.println("FIX: Assigned missing secureOwnerID to existing owner: " + newID);
+                    }
+                } else if (userFromFile instanceof Client) { // ADDED CLIENT ID CHECK
+                    Client client = (Client) userFromFile;
+                    // Check if the secureClientID is null or empty
+                    if (client.getSecureClientID() == null || client.getSecureClientID().isEmpty()) {
+                        String newID = ClientIDGenerator.generateRandomID();
+                        client.setSecureClientID(newID);
+                        FileBasedUserStore.saveUser(client); // Resave the object with the new ID
+                        System.out.println("FIX: Assigned missing secureClientID to existing client: " + newID);
+                    }
+                }
+                
                 return userFromFile; // SUCCESS: Logged in with file-stored password
             }
             // File found, but password failed -> Fail login
@@ -253,9 +276,15 @@ public class LandingPage extends JFrame {
             // SUCCESS: Initial login using the hardcoded password. 
             // Return a temporary object. The user must use 'Generate Pass' to persist this user.
              if (role.equals("Client")) {
-                return new Client(username, "Initial Client User", targetPassword, ""); 
+                 // FIX: Client must have a new secureClientID generated upon successful bootstrap
+                Client newClient = new Client(username, "Initial Client User", targetPassword, ""); 
+                newClient.setSecureClientID(ClientIDGenerator.generateRandomID()); // Generate and set the ID
+                return newClient;
             } else {
-                return new Owner(username, "Initial Vehicle Owner", targetPassword, ""); 
+                // FIX: Owner must have a new secureOwnerID generated upon successful bootstrap
+                Owner newOwner = new Owner(username, "Initial Vehicle Owner", targetPassword, ""); 
+                newOwner.setSecureOwnerID(OwnerIDGenerator.generateRandomID()); // Generate and set the ID
+                return newOwner;
             }
         }
 
@@ -286,23 +315,36 @@ public class LandingPage extends JFrame {
         
         String tempPassword = generateTempPassword(username);
         User newUser;
+        String secureID = "";
 
-        // Ensure the correct subclass is instantiated for saving
+        // Ensure the correct subclass is instantiated for saving and assign the secure ID
         if (role.equals("Client")) {
-            newUser = new Client(username, "Client User", tempPassword, ""); 
+            Client newClient = new Client(username, "Client User", tempPassword, ""); 
+            secureID = ClientIDGenerator.generateRandomID();
+            newClient.setSecureClientID(secureID);
+            newUser = newClient;
         } else {
-            // FIX: Ensure Owner object is created and saved correctly
-            newUser = new Owner(username, "Vehicle Owner", tempPassword, ""); 
+            Owner newOwner = new Owner(username, "Vehicle Owner", tempPassword, ""); 
+            secureID = OwnerIDGenerator.generateRandomID();
+            newOwner.setSecureOwnerID(secureID);
+            newUser = newOwner;
         }
         
         // 4. Save the new user object with the temporary password immediately (source of truth)
         FileBasedUserStore.saveUser(newUser);
 
         // 5. Update display area
+        String secureIDInfo = "";
+        if (newUser instanceof Owner) {
+            secureIDInfo = "\nOwner ID: " + ((Owner)newUser).getSecureOwnerID();
+        } else if (newUser instanceof Client) {
+            secureIDInfo = "\nClient ID: " + ((Client)newUser).getSecureClientID();
+        }
+
         tempPassDisplayArea.setBackground(new Color(200, 255, 200));
         tempPassDisplayArea.setText(
             "SUCCESS: New user file created for '" + username + "'!\n" +
-            "Password: " + tempPassword + "\n" +
+            "Password: " + tempPassword + secureIDInfo + "\n" +
             "Enter this password above to log in."
         );
         infoLabel.setText("Temporary password generated. Log in above.");

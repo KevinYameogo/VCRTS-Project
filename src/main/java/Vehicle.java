@@ -1,7 +1,14 @@
-// Vehicle.java (FINAL REVISED - No Job Association, Corrected Variable Name)
+// Vehicle.java (FINAL REVISED - ADDED Serializable)
 import java.time.LocalDateTime;
+// *** FIX 1: Add Java serialization import ***
+import java.io.Serializable; 
 
-public class Vehicle {
+// *** FIX 2: Implement Serializable ***
+public class Vehicle implements Serializable {
+    
+    // *** FIX 3: Add serialVersionUID for stability ***
+    private static final long serialVersionUID = 1L; 
+    
     private final String vehicleID;
     private final String make;
     private final String model;

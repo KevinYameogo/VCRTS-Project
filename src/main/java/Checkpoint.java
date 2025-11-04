@@ -1,8 +1,9 @@
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.io.Serializable;
-import java.util.UUID; // class to generate immutable + unique identifier
-
+import java.util.UUID; 
+// *** FIX: Import ThreadLocalRandom if you intend to generate random IDs here, 
+// but sticking to UUID as provided.
 
 public class Checkpoint implements Serializable {
     private final String checkpointID;
@@ -12,11 +13,13 @@ public class Checkpoint implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    // *** FIX: Added vehicleID parameter to the simplified constructor ***
     // Creates new checkpoint with random ID, current timestamp, and provided state data
-    public Checkpoint(byte[] stateData) {
+    public Checkpoint(byte[] stateData, String vehicleID) { // ADDED vehicleID
         this.checkpointID = UUID.randomUUID().toString();
         this.timestamp = LocalDateTime.now();
         this.stateData = (stateData == null) ? new byte[0] : Arrays.copyOf(stateData, stateData.length);
+        this.vehicleID = vehicleID; // ASSIGN THE VEHICLE ID
     }
 
     // Creates checkpoint with all values specified (for the purpose of restoring previous checkpoints)
@@ -48,6 +51,7 @@ public class Checkpoint implements Serializable {
     public String toString() {
         return "Checkpoint: " +
                 "checkpointID = '" + checkpointID + "\'" +
+                ", vehicleID = '" + vehicleID + "\'" + // Added vehicleID to toString for clarity
                 ", timestamp = " + getTimestamp() +
                 ", stateDataLength = " + ((stateData == null) ? 0 : stateData.length) +
                 '}';

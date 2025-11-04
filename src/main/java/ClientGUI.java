@@ -1,4 +1,4 @@
-// ClientGUI.java (FIXED: Job ID is now unique and system-generated upon submission)
+// ClientGUI.java (FINAL FIX: Implements Live Table Status Updates)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.*;
@@ -12,6 +12,8 @@ import java.time.format.DateTimeParseException;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+// Added for JTabbedPane ChangeListener
+import javax.swing.event.ChangeListener; 
 
 /**
  * ClientGUI combines job submission, management, billing, and password into a multi-tab panel.
@@ -83,11 +85,22 @@ public class ClientGUI extends JPanel {
         tabs.addTab("Manage Billing", createBillingPanel());
         tabs.addTab("Change Password", createPasswordPanel()); // NEW TAB
 
-        add(tabs, BorderLayout.CENTER);
+        this.add(tabs, BorderLayout.CENTER);
 
-        // These load the GUI *and* restore the controller's state
+        // *** FIX: Add a listener to refresh Tab 1 whenever it is selected ***
+        tabs.addChangeListener((ChangeListener) e -> {
+            // Index 0 is "Submit New Job"
+            if (tabs.getSelectedIndex() == 0) { 
+                refreshJobTable();
+            }
+        });
+        
         loadJobsFromCSV();
         loadBillingInfo();
+        
+        // Initial refresh after loading all data to catch status changes that occurred
+        // during controller restoration (scheduleJobs).
+        refreshJobTable(); 
     }
 
     /**
@@ -202,9 +215,9 @@ public class ClientGUI extends JPanel {
         root.add(Box.createVerticalStrut(12));
 
         // === TABLE PANEL ===
-        // Update table model columns to show Client ID and Job ID separately
+        // FIX: Added "Status" column to the display table
         tableModel = new DefaultTableModel(new Object[]{
-                "Timestamp", "Client ID", "Job ID", "Duration (Hours)", "Deadline", "Redundancy"
+                "Timestamp", "Client ID", "Job ID", "Status", "Duration (Hours)", "Deadline", "Redundancy" 
         }, 0); 
         table = new JTable(tableModel);
         JScrollPane tableScroll = new JScrollPane(table);
@@ -642,6 +655,35 @@ public class ClientGUI extends JPanel {
     // --- HELPER METHODS ---
 
     /**
+     * Iterates through the table model in Tab 1 and updates the status column
+     * by querying the live status from the VCController.
+     */
+    private void refreshJobTable() {
+        // Status column index is 3 (Timestamp, Client ID, Job ID, Status)
+        int statusColumnIndex = 3; 
+        // Job ID column index is 2
+        int jobIDColumnIndex = 2;  
+
+        for (int i = 0; i < tableModel.getRowCount(); i++) {
+            String jobID = (String) tableModel.getValueAt(i, jobIDColumnIndex);
+            
+            // Query the live status from the VCController
+            String liveStatus = controller.getJobStatus(jobID);
+            
+            // Check if the status has changed
+            String currentTableStatus = (String) tableModel.getValueAt(i, statusColumnIndex);
+            
+            // We only update if the live status is more advanced than the stored/displayed status
+            if (!liveStatus.equalsIgnoreCase(currentTableStatus) && 
+                !liveStatus.equalsIgnoreCase("Job not found")) {
+                
+                // Update the table model with the new status
+                tableModel.setValueAt(liveStatus, i, statusColumnIndex);
+            }
+        }
+    }
+    
+    /**
      * Opens the Billing Info dialog.
      */
     private void onAddBillingInfo(ActionEvent e) {
@@ -694,13 +736,18 @@ public class ClientGUI extends JPanel {
 
         // --- FIX: GENERATE UNIQUE JOB ID AND USE FIXED CLIENT ID ---
         String clientID = clientUser.getSecureClientID(); // Fixed, secure ID
+        
         // Generate a new unique ID for this specific job submission
+        // Format: [Client_Secure_ID]-[HHmmss]-[Random 3-digit]
         String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
 
         if (clientID.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Client ID is missing. Please re-login.", "System Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
+        
+        // --- Get Initial Status and Finalize Submission Data ---
+        final String initialStatus = "Pending"; // All submitted jobs start as Pending
 
         // *** UNIQUE JOB ID CHECK (Now checks the newly generated ID) ***
         if (controller.isJobInSystem(jobID)) {
@@ -744,27 +791,31 @@ public class ClientGUI extends JPanel {
         // --- Also add to list and save ---
         // 1. Add to table: Logging Client ID (clientID) and Job ID (jobID)
         String ts = TS_FMT.format(LocalDateTime.now());
-        tableModel.addRow(new Object[]{ts, clientID, jobID, durationInHours, deadlineString, redundancy});
+        // FIX: Added initialStatus to the table view
+        tableModel.addRow(new Object[]{ts, clientID, jobID, initialStatus, durationInHours, deadlineString, redundancy});
 
         // 2. Save this new entry to file 
         File out = new File(CSV_FILE);
         boolean writeHeader = !out.exists() || out.length() == 0;
         try (FileWriter fw = new FileWriter(out, true)) {
             if (writeHeader) {
-                // ADDED job_id to the header
-                fw.write("timestamp,client_id,job_id,duration_hours,deadline,redundancy\n");
+                // FIX: UPDATED HEADER to include 'status'
+                fw.write("timestamp,client_id,job_id,status,duration_hours,deadline,redundancy\n");
             }
-            // Write new job: Now logging Client ID and Job ID
-            fw.write(ts + "," + clientID + "," + jobID + "," + durationInHours + "," + escapeCsv(deadlineString) + "," + redundancy + "\n");
+            // FIX: Write new job with initialStatus
+            fw.write(ts + "," + clientID + "," + jobID + "," + initialStatus + "," + durationInHours + "," + escapeCsv(deadlineString) + "," + redundancy + "\n");
         } catch (IOException ex) {
             JOptionPane.showMessageDialog(this, "Could not save job to file: " + ex.getMessage());
         }
+        
+        // *** FIX: Immediately refresh the table after submitting a job ***
+        refreshJobTable();
     }
 
 
     /**
      * Loads all jobs from the user's CSV file into the table.
-     * ALSO, restores any still-pending jobs back into the VCController
+     * ALSO, restores any still-active jobs back into the VCController
      * to persist the state across application restarts.
      */
     private void loadJobsFromCSV() {
@@ -779,27 +830,35 @@ public class ClientGUI extends JPanel {
 
             while ((line = br.readLine()) != null) {
                 String[] values = line.split(",");
-                // Expecting 6 values now: timestamp, client_id, job_id, duration_hours, deadline, redundancy
-                if (values.length >= 6) { 
+                // FIX: Expecting 7 values now: timestamp, client_id, job_id, status, duration_hours, deadline, redundancy
+                if (values.length >= 7) { 
                     // 1. Add to table for historical view 
-                    // Columns: "Timestamp", "Client ID", "Job ID", "Duration (Hours)", "Deadline", "Redundancy"
-                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4], values[5]});
+                    // Columns: "Timestamp", "Client ID", "Job ID", "Status", "Duration (Hours)", "Deadline", "Redundancy"
+                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4], values[5], values[6]});
 
                     // 2. Restore job to controller if it should be active
                     try {
-                        // Job ID is values[2]
+                        // Status is values[3]
                         String jobID = values[2];
-                        int durationInHours = Integer.parseInt(values[3]);
-                        String deadlineString = values[4].replace("\"", ""); // Basic un-escape
+                        String storedStatus = values[3]; // FIX: Read stored status
+                        int durationInHours = Integer.parseInt(values[4]);
+                        String deadlineString = values[5].replace("\"", ""); // Basic un-escape
                         LocalDateTime deadline = LocalDateTime.parse(deadlineString); // Parse ISO string
-                        int redundancy = Integer.parseInt(values[5]);
+                        int redundancy = Integer.parseInt(values[6]);
 
-                        // If deadline is in the future AND the job isn't already in the system
-                        if (deadline.isAfter(LocalDateTime.now()) && !controller.isJobInSystem(jobID)) {
-                            // Re-create the job using the unique Job ID
+                        // Only restore to the controller if the job isn't completed or failed.
+                        // The controller's list should only manage *active* jobs (Pending or In-Progress).
+                        if (deadline.isAfter(LocalDateTime.now()) && 
+                            !controller.isJobInSystem(jobID) &&
+                            (storedStatus.equalsIgnoreCase("Pending") || storedStatus.equalsIgnoreCase("In-Progress"))) {
+                            
+                            // Re-create the job and set the restored status
                             Job jobToRestore = new Job(jobID, durationInHours, redundancy, deadline);
-                            controller.addJob(jobToRestore); // This re-adds it as "Pending"
-                            System.out.println("Restored persistent job to controller: " + jobID);
+                            // FIX: Set the status based on the stored value
+                            jobToRestore.updateStatus(storedStatus); 
+                            
+                            controller.addJob(jobToRestore); // This adds it back to the controller's active lists
+                            System.out.println("Restored persistent job to controller: " + jobID + " with status: " + storedStatus);
                         }
 
                     } catch (DateTimeParseException | NumberFormatException e) {

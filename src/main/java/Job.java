@@ -2,9 +2,10 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 // Job.java
-import java.time.LocalDateTime;
 
 public class Job implements Serializable {
+    private static final long serialVersionUID = 1L; 
+    
     // --- UML Attributes ---
     private final String jobID; // +jobID: String
     private String status;      // -status: String
@@ -20,10 +21,11 @@ public class Job implements Serializable {
     private final int durationInHours;
     private final LocalDateTime deadline;
     
-    // Simplified constructor to match ClientGUI submission logic
+    // Simplified constructor (used when submitting a NEW job)
     public Job(String jobID, int durationInHours, int redundancyLevel, LocalDateTime deadline) {
         this.jobID = jobID;
-        this.status = "Pending";
+        // Status is correctly initialized to Pending for NEW submissions
+        this.status = "Pending"; 
         this.redundancyLevel = redundancyLevel;
         this.durationInHours = durationInHours;
         this.deadline = deadline;
@@ -34,6 +36,7 @@ public class Job implements Serializable {
     // --- UML Methods (REQUIRED) ---
 
     // +updateStatus(newStatus: String): void
+    // This is used by VCController when loading a job from persistence to set the stored status.
     public void updateStatus(String newStatus) {
         this.status = newStatus;
     }
@@ -68,6 +71,7 @@ public class Job implements Serializable {
     // Used for display in logs/GUI lists
     @Override
     public String toString() {
+        // Updated to explicitly show status when printing
         return jobID + " (" + status + ", " + durationInHours + " hrs)";
     }
     

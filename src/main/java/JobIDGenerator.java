@@ -1,4 +1,3 @@
-// JobIDGenerator.java (New Helper Class)
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ThreadLocalRandom;

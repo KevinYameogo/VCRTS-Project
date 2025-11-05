@@ -1,12 +1,9 @@
-// LandingPage.java (FINAL FIX: Implements 'Generate Pass' on login view, handles Client/Owner secure IDs)
 import javax.swing.*;
 import java.awt.*;
 import io.github.cdimascio.dotenv.Dotenv;
 import java.io.*;
 import java.util.Random; 
 
-// NOTE: Assumes all model classes (User, Client, Owner) and FileBasedUserStore, 
-// and the new ClientIDGenerator/OwnerIDGenerator are available.
 
 public class LandingPage extends JFrame {
 
@@ -21,8 +18,6 @@ public class LandingPage extends JFrame {
     private JButton generatePassButton; 
     private JTextArea tempPassDisplayArea; 
 
-    // Load .env variables outside the constructor for access
-    // Note: The reliance on these is now minimized, primarily for the *very first* bootstapping login.
     Dotenv dotenv = Dotenv.load();
 
     private final String CLIENT_USERNAME = dotenv.get("CLIENT_USERNAME");
@@ -126,7 +121,7 @@ public class LandingPage extends JFrame {
         buttonRow.add(loginButton);
         buttonRow.add(generatePassButton); 
         
-        // NEW: Text area for temporary password display
+        // Text area for temporary password display
         tempPassDisplayArea = new JTextArea("Use this panel to generate your initial login password.");
         tempPassDisplayArea.setEditable(false);
         tempPassDisplayArea.setLineWrap(true);
@@ -170,7 +165,7 @@ public class LandingPage extends JFrame {
             tempPassDisplayArea.setBackground(new Color(240, 248, 255));
         });
 
-        // NEW: Generate Pass Action
+        //Generate Pass Action
         generatePassButton.addActionListener(e -> generateAndStoreTempPass());
 
         
@@ -210,7 +205,6 @@ public class LandingPage extends JFrame {
                     cardLayout.show(mainContentPanel, "OWNER_VIEW");
                 }
                 
-                // Success message
                 infoLabel.setText("Login successful! Welcome, " + authenticatedUser.getName());
                 
             } else {
@@ -223,45 +217,41 @@ public class LandingPage extends JFrame {
     
     /**
      * Attempts to load existing user data from file and authenticate. 
-     * If the file does not exist, it allows a one-time login via the hardcoded .env password.
      */
     private User loadUserOrAuthenticate(String username, String password, String role) {
         
-        // 1. Try to load user from file (Persistent Login) - PRIMARY SOURCE OF TRUTH
+        //Try to load user from file 
         User userFromFile = FileBasedUserStore.loadUser(username, role);
         
         if (userFromFile != null) {
             // File Found: Authenticate against the file-stored password
             if (userFromFile.getPassword().equals(password)) {
                 
-                // NEW: FIX for Client and Owner - ensure secure ID is assigned upon file load
+                // ensure secure ID is assigned upon file load
                 if (userFromFile instanceof Owner) {
                     Owner owner = (Owner) userFromFile;
-                    // Check if the secureOwnerID is null or empty
                     if (owner.getSecureOwnerID() == null || owner.getSecureOwnerID().isEmpty()) {
                         String newID = OwnerIDGenerator.generateRandomID();
                         owner.setSecureOwnerID(newID);
-                        FileBasedUserStore.saveUser(owner); // Resave the object with the new ID
+                        FileBasedUserStore.saveUser(owner); 
                         System.out.println("FIX: Assigned missing secureOwnerID to existing owner: " + newID);
                     }
-                } else if (userFromFile instanceof Client) { // ADDED CLIENT ID CHECK
+                } else if (userFromFile instanceof Client) { 
                     Client client = (Client) userFromFile;
-                    // Check if the secureClientID is null or empty
                     if (client.getSecureClientID() == null || client.getSecureClientID().isEmpty()) {
                         String newID = ClientIDGenerator.generateRandomID();
                         client.setSecureClientID(newID);
-                        FileBasedUserStore.saveUser(client); // Resave the object with the new ID
+                        FileBasedUserStore.saveUser(client); 
                         System.out.println("FIX: Assigned missing secureClientID to existing client: " + newID);
                     }
                 }
                 
                 return userFromFile; // SUCCESS: Logged in with file-stored password
             }
-            // File found, but password failed -> Fail login
+            // File found
             return null; 
         }
         
-        // 2. File Not Found: ONE-TIME Initial Authentication using .env (Bootstrap)
         
         String targetPassword;
         if (role.equals("Client")) {
@@ -276,14 +266,14 @@ public class LandingPage extends JFrame {
             // SUCCESS: Initial login using the hardcoded password. 
             // Return a temporary object. The user must use 'Generate Pass' to persist this user.
              if (role.equals("Client")) {
-                 // FIX: Client must have a new secureClientID generated upon successful bootstrap
+                 //Client must have a new secureClientID generated upon successful bootstrap
                 Client newClient = new Client(username, "Initial Client User", targetPassword, ""); 
-                newClient.setSecureClientID(ClientIDGenerator.generateRandomID()); // Generate and set the ID
+                newClient.setSecureClientID(ClientIDGenerator.generateRandomID()); 
                 return newClient;
             } else {
-                // FIX: Owner must have a new secureOwnerID generated upon successful bootstrap
+                // Owner must have a new secureOwnerID generated upon successful bootstrap
                 Owner newOwner = new Owner(username, "Initial Vehicle Owner", targetPassword, ""); 
-                newOwner.setSecureOwnerID(OwnerIDGenerator.generateRandomID()); // Generate and set the ID
+                newOwner.setSecureOwnerID(OwnerIDGenerator.generateRandomID()); 
                 return newOwner;
             }
         }
@@ -293,7 +283,6 @@ public class LandingPage extends JFrame {
 
     /**
      * Generates a temporary password, creates the user object, and saves it to the file.
-     * This establishes the user file as the source of truth, removing reliance on .env.
      */
     private void generateAndStoreTempPass() {
         String username = usernameField.getText().trim();
@@ -305,7 +294,7 @@ public class LandingPage extends JFrame {
             return;
         }
 
-        // 1. Check if user already exists based on the file.
+        // Check if user already exists based on the file.
         // If it exists, they should use the file-stored password.
         if (FileBasedUserStore.loadUser(username, role) != null) {
             tempPassDisplayArea.setText("Error: User file already exists. Please log in.");
@@ -330,10 +319,10 @@ public class LandingPage extends JFrame {
             newUser = newOwner;
         }
         
-        // 4. Save the new user object with the temporary password immediately (source of truth)
+        // Save the new user object with the temporary password immediately 
         FileBasedUserStore.saveUser(newUser);
 
-        // 5. Update display area
+        //
         String secureIDInfo = "";
         if (newUser instanceof Owner) {
             secureIDInfo = "\nOwner ID: " + ((Owner)newUser).getSecureOwnerID();

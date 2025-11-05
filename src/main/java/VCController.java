@@ -7,7 +7,6 @@ import java.util.stream.Stream;
 import java.util.Map;   
 import java.util.HashMap; 
 import java.util.stream.Collectors; 
-// *** FIX 1: ADD MISSING JAVA IO IMPORT ***
 import java.io.*; 
 import javax.swing.JOptionPane; 
 
@@ -49,11 +48,8 @@ public class VCController implements Serializable {
     scheduleJobs();
   }
 
-  // *** NEW: Persistence methods ***
-  
   /** Saves the current state of job lists and maps. */
   private void saveState() {
-      // IOException is now resolved by 'import java.io.*'
       try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(STATE_FILE))) {
           oos.writeObject(this.pendingJobs);
           oos.writeObject(this.inProgressJobs);
@@ -66,8 +62,8 @@ public class VCController implements Serializable {
       }
   }
 
-  /** Loads the state from file upon startup. */
-  // *** FIX 2: Apply suppression annotation to hide unchecked cast warnings ***
+  /** Loads the state from file upon startup. 
+      populates activeVehicles list using the loaded vehicleJobMap keys. */
   @SuppressWarnings("unchecked")
   private boolean loadState() {
       File stateFile = new File(STATE_FILE);
@@ -81,8 +77,14 @@ public class VCController implements Serializable {
           this.jobVehicleMap = (Map<Job, List<Vehicle>>) ois.readObject();
           this.vehicleJobMap = (Map<Vehicle, Job>) ois.readObject();
           
+          // Initialize lists and populate activeVehicles using loaded data.
           this.availableVehicles = new ArrayList<>();
           this.activeVehicles = new ArrayList<>();
+          
+          // Any vehicle in the vehicleJobMap (which was loaded) is considered active.
+          this.activeVehicles.addAll(this.vehicleJobMap.keySet());
+          System.out.println("Loaded " + this.activeVehicles.size() + " active vehicles from state.");
+        
           
           return true;
       } catch (IOException | ClassNotFoundException e) {
@@ -96,13 +98,12 @@ public class VCController implements Serializable {
   public void addJob(Job job){ 
     pendingJobs.add(job);
     System.out.println("Job " + job.getJobID() + " added to pending queue.");
-    saveState(); // *** Save state on new job submission ***
+    saveState(); 
     scheduleJobs();
   }
 
   //Schedule jobs
   private void scheduleJobs(){
-    //no pending jobs, no scheduling.
     if(pendingJobs.isEmpty()){
       return;
     }
@@ -116,7 +117,7 @@ public class VCController implements Serializable {
       inProgressJobs.add(jobToAssign);
       jobToAssign.updateStatus("In-Progress");
       System.out.println("Job " + jobToAssign.getJobID() + " started.");
-      saveState(); // *** Save state after moving job to In-Progress ***
+      saveState();
 
     }else{
 
@@ -125,11 +126,12 @@ public class VCController implements Serializable {
     }
   }
 
-  //assign job to vehicle(s) (REVISED)
+  //assign job to vehicle(s) 
   private void assignJob(Job job){
     int redundancyLevel = job.getRedundancyLevel();
+    String jobID = job.getJobID(); 
 
-    System.out.println("Assigning Job " + job.getJobID() 
+    System.out.println("Assigning Job " + jobID 
      + " to " + redundancyLevel + " vehicle(s).");
     
     List<Vehicle> assignedVehicles = new ArrayList<>();
@@ -141,7 +143,7 @@ public class VCController implements Serializable {
       assignedVehicles.add(vehicleToAssign);
       vehicleJobMap.put(vehicleToAssign, job);
       
-      vehicleToAssign.startExecution(); 
+      vehicleToAssign.startExecution(jobID); 
     }
     jobVehicleMap.put(job, assignedVehicles);
   }
@@ -153,7 +155,7 @@ public class VCController implements Serializable {
     systemServer.storeCheckpoint(checkpoint);
   }
 
-  //move completed job to archived list. Notify the server (REVISED)
+  //move completed job to archived list. Notify the server.
   public void handleJobCompletion(Job job){
     if(archivedJobs.contains(job)){
       System.out.println("Job " + job.getJobID() + " is already archived.");
@@ -169,7 +171,6 @@ public class VCController implements Serializable {
     
     // Release vehicles and update active/available lists
     for(Vehicle vehicle : vehiclesToRelease){
-        
         activeVehicles.remove(vehicle);
         vehicle.markAvailable();
         availableVehicles.add(vehicle);
@@ -188,7 +189,7 @@ public class VCController implements Serializable {
     System.out.println("Job " + job.getJobID() + " marked as 'Completed'.");
     this.transferJobToServer(job); 
     
-    saveState(); // *** Save state after job status changes to Completed ***
+    saveState(); 
 
     scheduleJobs();
   }
@@ -199,27 +200,20 @@ public class VCController implements Serializable {
     System.out.println("Job " + job.getJobID() + " data transferred to server.");
   }
 
-  // clears vehicle data (REMOVED - logic moved/renamed to vehicle.markAvailable)
-  private void clearVehicleData(Vehicle vehicle){
-    // vehicle.markAvailable(); 
-    System.out.println("Data erased from Vehicle " + vehicle.getVehicleID() + ".");
-  }
 
-  //removes vehicle from list and re-queue job (REVISED)
+  //removes vehicle from list and re-queue job OR implements recovery
   public void handleVehicleDeparture(Vehicle vehicle){ //called by leaving vehicle
     System.out.println("Vehicle " + vehicle.getVehicleID() + " is departing...");
     
     if(availableVehicles.remove(vehicle)){
       System.out.println("Vehicle removed from available pool");
-      saveState(); // *** Save state after available vehicle leaves ***
+      saveState();
       return;
     }
 
-    //if not in available, then should be in activeList
     if(activeVehicles.remove(vehicle)){
       System.out.println("Vehicle removed from active pool.");
 
-      // NEW: Look up job using the reverse map
       Job interruptedJob = vehicleJobMap.remove(vehicle);
       
       if(interruptedJob != null){
@@ -230,20 +224,53 @@ public class VCController implements Serializable {
             return list;
         });
 
-        // If the job is now running on ZERO vehicles, re-queue it.
+        // Check if the job is now running on ZERO vehicles
         List<Vehicle> remainingVehicles = jobVehicleMap.get(interruptedJob);
         if (remainingVehicles == null || remainingVehicles.isEmpty()) {
             
-            // Re-queue the job
-            inProgressJobs.remove(interruptedJob);
-            pendingJobs.add(interruptedJob);
-            interruptedJob.updateStatus("Pending(Interrupted)");
-            jobVehicleMap.remove(interruptedJob); // Fully remove the mapping
+            if (!availableVehicles.isEmpty()) {
+                
+                // 1. Attempt Recovery: Get the latest checkpoint
+                Checkpoint latestCheckpoint = systemServer.getLatestCheckpoint(interruptedJob.getJobID()); 
+                
+                if (latestCheckpoint != null) {
+                    // 2. Recruit the replacement vehicle
+                    Vehicle replacementVehicle = availableVehicles.remove(0); 
+                    activeVehicles.add(replacementVehicle);
+                    
+                    // 3. Restart computation on the new vehicle
+                    restartComputation(latestCheckpoint, replacementVehicle);
+                    
+                    // 4. Update maps for the replacement
+                    List<Vehicle> updatedVehicles = new ArrayList<>();
+                    updatedVehicles.add(replacementVehicle);
+                    jobVehicleMap.put(interruptedJob, updatedVehicles);
+                    vehicleJobMap.put(replacementVehicle, interruptedJob);
+                    
+                    System.out.println("Job " + interruptedJob.getJobID() + " **recovered** on new vehicle: " 
+                     + replacementVehicle.getVehicleID() + " from checkpoint.");
+                     
+                } else {
+                    // Fallback: Re-queue if no valid checkpoint is found
+                    inProgressJobs.remove(interruptedJob);
+                    pendingJobs.add(interruptedJob);
+                    interruptedJob.updateStatus("Pending(Interrupted)");
+                    jobVehicleMap.remove(interruptedJob);
+                    System.out.println("Job " + interruptedJob.getJobID() 
+                     + " re-queued. No valid checkpoint found for recovery.");
+                }
+                 
+            } else {
+                // Fallback: Re-queue if no vehicles are available for immediate replacement
+                inProgressJobs.remove(interruptedJob);
+                pendingJobs.add(interruptedJob);
+                interruptedJob.updateStatus("Pending(Interrupted)");
+                jobVehicleMap.remove(interruptedJob);
+                System.out.println("Job " + interruptedJob.getJobID() + " re-queued. No vehicles available.");
+            }
             
-            System.out.println("Job " + interruptedJob.getJobID() 
-             + " was interrupted and has been re-queued.");
              
-            saveState(); // *** Save state after re-queuing interrupted job ***
+            saveState(); 
         } else {
              System.out.println("Job " + interruptedJob.getJobID() 
              + " continues on " + remainingVehicles.size() + " vehicle(s).");
@@ -255,7 +282,7 @@ public class VCController implements Serializable {
     + " was not found in active or available lists.");
   }
   
-  //finds vehicle and instructs creation of checkpoint (REVISED)
+  //finds vehicle and instructs creation of checkpoint 
   public void triggerCheckpoint(Job job){
 
     if(!inProgressJobs.contains(job)){
@@ -267,7 +294,7 @@ public class VCController implements Serializable {
     
     int vehiclesTriggered = 0;
     
-    // NEW: Find the vehicles using the map
+    //Find the vehicles using the map
     List<Vehicle> targetVehicles = jobVehicleMap.getOrDefault(job, new ArrayList<>());
 
     for(Vehicle vehicle: targetVehicles){
@@ -282,7 +309,7 @@ public class VCController implements Serializable {
     this.availableVehicles.add(vehicle);
     System.out.println("New vehicle recruited: " + vehicle.getVehicleID() 
     + ". Now available for jobs.");
-    saveState(); // *** Save state after recruiting a vehicle ***
+    saveState(); 
     scheduleJobs();
   }
 
@@ -358,7 +385,6 @@ public class VCController implements Serializable {
             .anyMatch(job -> job.getJobID().equals(jobID));
   }
 
-  //get inprogress jobs
   public List<Job> getInProgressJobs() {
     return inProgressJobs;
   }

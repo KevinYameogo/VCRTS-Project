@@ -1,5 +1,7 @@
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Comparator;
 
 
 public class Server {
@@ -49,6 +51,17 @@ public class Server {
         this.checkpointRepo.add(checkpoint);
         System.out.println("Server stored checkpoint: " + checkpoint.getCheckpointID()); 
     }
-
-
+    
+    /**
+     * Finds the latest (most recent) checkpoint for a specific job ID.
+     * Assumes Checkpoint class has a comparable timestamp/sequence number.
+     * For this example, we'll assume 'timestamp' allows comparison.
+     */
+    public Checkpoint getLatestCheckpoint(String jobID) {
+        return checkpointRepo.stream()
+            .filter(cp -> cp.getJobID().equals(jobID))
+            // Sort by a timestamp or sequence number to find the 'latest'
+            .max(Comparator.comparing(Checkpoint::getTimestamp)) 
+            .orElse(null);
+    }
 }

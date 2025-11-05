@@ -20,7 +20,7 @@ import java.util.Set;
  */
 public class OwnerGUI extends JPanel {
 
-    private final Owner ownerUser; // Stored the rich object
+    private final Owner ownerUser;
     private final Runnable onLogout;
 
     // --- TAB 1 (Register) FIELDS ---
@@ -80,7 +80,7 @@ public class OwnerGUI extends JPanel {
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("Register Vehicle", createRegisterVehiclePanel());
         tabs.addTab("Manage Payment", createPaymentPanel());
-        tabs.addTab("Change Password", createPasswordPanel()); // ADDED PASSWORD TAB
+        tabs.addTab("Change Password", createPasswordPanel());
 
         this.add(tabs, BorderLayout.CENTER);
 
@@ -97,7 +97,6 @@ public class OwnerGUI extends JPanel {
         rootPanel.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
         rootPanel.setBackground(new Color(187, 213, 237));
 
-        // Use ownerUser.getName()
         JLabel header = new JLabel("Vehicle Registration  |  Welcome " + ownerUser.getName(), SwingConstants.CENTER);
         header.setAlignmentX(Component.CENTER_ALIGNMENT);
         header.setFont(new Font("SansSerif", Font.BOLD, 18));
@@ -114,7 +113,6 @@ public class OwnerGUI extends JPanel {
         // --- Initialize Fields ---
         ownerIdField = new JTextField();
         
-        // --- FIX: SET SECURE ID AND MAKE NON-EDITABLE ---
         // 1. Set the fixed, secure Owner ID from the logged-in user
         ownerIdField.setText(ownerUser.getSecureOwnerID());
         // 2. Lock the field, preventing user modification or deletion
@@ -149,7 +147,7 @@ public class OwnerGUI extends JPanel {
 
         gc.gridx = 0;
         gc.gridy = r;
-        // FIX: Updated label to reflect the fixed, secure, 6-character ID
+
         form.add(new JLabel("Owner ID:"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
@@ -181,8 +179,7 @@ public class OwnerGUI extends JPanel {
 
         JPanel licensePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         licensePanel.setOpaque(false);
-
-        // License Plate row (Simplified layout logic retained from last change for alignment)
+        
         gc.gridx = 0;
         gc.gridy = r;
         form.add(new JLabel("License Plate:"), gc);
@@ -191,7 +188,6 @@ public class OwnerGUI extends JPanel {
         gc.gridy = r;
         form.add(licenseField, gc);
 
-        // State field in next column (aligned row)
         gc.gridx = 2;
         gc.gridy = r;
         form.add(new JLabel("State:"), gc);
@@ -232,7 +228,7 @@ public class OwnerGUI extends JPanel {
 
         gc.gridx = 0;
         gc.gridy = r;
-        gc.gridwidth = 4; // Spanning more columns due to the license/state layout change
+        gc.gridwidth = 4; 
         form.add(buttons, gc);
 
         rootPanel.add(form);
@@ -270,7 +266,7 @@ public class OwnerGUI extends JPanel {
         addPaymentButton.setFont(new Font("SansSerif", Font.BOLD, 14));
         addPaymentButton.addActionListener(this::onAddPaymentInfo);
 
-        // --- NEW: Delete Button ---
+        // --- Delete Button ---
         JButton deletePaymentButton = new JButton("Delete Info");
         deletePaymentButton.setFont(new Font("SansSerif", Font.PLAIN, 14));
         deletePaymentButton.setBackground(new Color(244, 67, 54));
@@ -384,10 +380,10 @@ public class OwnerGUI extends JPanel {
 
         // 4. Success: Update User object and save
         ownerUser.setPassword(newPass);
-        // NOTE: Owner is the subclass of User, so FileBasedUserStore must be called with the subclass object.
+        // Owner is the subclass of User, so FileBasedUserStore is called with the subclass object.
         FileBasedUserStore.saveUser(ownerUser); 
 
-        passStatusLabel.setForeground(new Color(34, 139, 34)); // Forest Green
+        passStatusLabel.setForeground(new Color(34, 139, 34));
         passStatusLabel.setText("Password successfully updated! New password is now active.");
         
         // Clear fields
@@ -448,7 +444,7 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
-        // --- FIX: Use the non-editable, secured Owner ID ---
+        // ---Use the non-editable, secured Owner ID ---
         String ownerId = ownerIdField.getText().trim();
         
         String make = makeField.getText().trim();
@@ -626,8 +622,6 @@ public class OwnerGUI extends JPanel {
     }
 
     private void clearForm() {
-        // FIX: Owner ID is now non-editable, so we don't attempt to clear it.
-        // ownerIdField.setText(""); 
         makeField.setText("");
         modelField.setText("");
         licenseField.setText("");
@@ -727,7 +721,6 @@ public class OwnerGUI extends JPanel {
         }
 
         public void prefill(String info) {
-            // Pre-fill fields if info already exists
             if (info != null && !info.isEmpty()) {
                 String[] parts = info.split("\\|");
                 if (parts.length == 5) {
@@ -738,7 +731,6 @@ public class OwnerGUI extends JPanel {
                     expYearField.setText(parts[4]);
                 }
             } else {
-                // Clear fields if no info
                 nameField.setText("");
                 cardField.setText("");
                 cvcField.setText("");

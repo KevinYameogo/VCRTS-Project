@@ -9,7 +9,7 @@ public class ClientIDGenerator {
 
     /**
      * Generates a random 6-character ID from a pool of letters, numbers, and special symbols.
-     * @return A unique 6-character client ID.
+     * A unique 6-character client ID.
      */
     public static String generateRandomID() {
         StringBuilder sb = new StringBuilder(ID_LENGTH);

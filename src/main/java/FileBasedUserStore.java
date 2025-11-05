@@ -1,13 +1,5 @@
 import java.io.*;
 import javax.swing.JOptionPane;
-// Assuming User, Client, and Owner classes are in the same package, 
-// the User class itself must be imported or fully qualified.
-// If User is in the default package, no import is needed, 
-// but if it's in a specific package, we need the import. 
-// Assuming for clarity and best practice that User needs to be imported:
-
-// import your.package.User; 
-// Assuming User is in the default package based on your model structure:
 
 // Handles saving and loading the User object (which includes the password)
 public class FileBasedUserStore {
@@ -43,15 +35,13 @@ public class FileBasedUserStore {
         File userFile = new File(fileName);
         
         if (!userFile.exists()) {
-            return null; // User file not found
+            return null; 
         }
 
         try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(userFile))) {
             Object obj = ois.readObject();
             if (obj instanceof User) {
-                // Ensure the correct subclass is returned
                 User loadedUser = (User) obj;
-                // Double-check role consistency (Client/Owner must match the file)
                 if (loadedUser.getRole().equals(role)) {
                     return loadedUser;
                 }

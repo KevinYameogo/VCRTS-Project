@@ -49,7 +49,7 @@ public class NetworkServer implements Runnable {
 
     public void stop() {
         this.isRunning = false;
-        // You might need to add code to interrupt the serverSocket.accept() call
+        //might need to add code to interrupt the serverSocket.accept() call
     }
 }
 
@@ -74,12 +74,9 @@ class ClientHandler implements Runnable {
             // Read an object from the client
             Object receivedObject = ois.readObject();
 
-            // Check if it's a Checkpoint
             if (receivedObject instanceof Checkpoint) {
                 Checkpoint checkpoint = (Checkpoint) receivedObject;
-                
-                // *** This is the key part ***
-                // Pass the received checkpoint to the controller's logic
+        
                 controller.handleCheckpoint(checkpoint);
             } else {
                 System.out.println("Received unknown object type from " + clientSocket.getInetAddress());
@@ -89,9 +86,9 @@ class ClientHandler implements Runnable {
             System.err.println("Client handler error: " + e.getMessage());
         } finally {
             try {
-                clientSocket.close(); // Ensure client socket is closed
+                clientSocket.close(); 
             } catch (IOException e) {
-                // ignore
+        
             }
         }
     }

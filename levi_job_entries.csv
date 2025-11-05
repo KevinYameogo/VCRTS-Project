@@ -9,3 +9,4 @@ timestamp,client_id,job_id,status,duration_hours,deadline,redundancy
 2025-11-04 17:55:49,P/Xekk,P/Xekk-175547-941,Pending,6,2025-11-17T00:00,4
 2025-11-04 22:00:25,P/Xekk,P/Xekk-220023-582,Pending,7,2025-11-13T00:00,2
 2025-11-04 22:00:40,P/Xekk,P/Xekk-220039-757,Pending,3,2025-11-27T00:00,2
+2025-11-04 22:24:47,P/Xekk,P/Xekk-222442-428,Pending,1,2025-11-05T23:00,1

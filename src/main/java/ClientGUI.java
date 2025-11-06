@@ -23,7 +23,7 @@ public class ClientGUI extends JPanel {
     private final Runnable onLogout;
 
     // --- TAB 1 (Submit Job) FIELDS ---
-    private JTextField clientSecureIdField; 
+    private JTextField clientIdField; 
     private JSpinner durationSpinner;
     private JComboBox<String> durationUnitBox;
     private JSpinner redundancySpinner;
@@ -121,11 +121,9 @@ public class ClientGUI extends JPanel {
         gc.fill = GridBagConstraints.HORIZONTAL;
 
         // Initialize fields
-        clientSecureIdField = new JTextField();
-        // 1. Set the fixed, secure Client ID from the logged-in user
-        clientSecureIdField.setText(clientUser.getSecureClientID());
-        // 2. Lock the field, preventing user modification or deletion
-        clientSecureIdField.setEditable(false); 
+        clientIdField = new JTextField();
+        ((AbstractDocument) clientIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(6));
+
         
         durationSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10000, 1));
         durationUnitBox = new JComboBox<>(new String[]{"hours", "days"});
@@ -142,10 +140,10 @@ public class ClientGUI extends JPanel {
         gc.gridx = 0;
         gc.gridy = r;
         
-        form.add(new JLabel("Your Client ID (Fixed):"), gc); 
+        form.add(new JLabel("Client ID(6 chars):"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
-        form.add(clientSecureIdField, gc); 
+        form.add(clientIdField, gc); 
 
         JPanel durationPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         durationPanel.setOpaque(false);
@@ -711,17 +709,17 @@ public class ClientGUI extends JPanel {
             return;
         }
 
-        // --- GENERATE UNIQUE JOB ID AND USE FIXED CLIENT ID ---
-        String clientID = clientUser.getSecureClientID(); 
+        // --- GET CLIENT ID FROM USER INPUT ---
+        String clientID = clientIdField.getText().trim();
         
-        // Generate a new unique ID for this specific job submission
-        // Format: [Client_Secure_ID]-[HHmmss]-[Random 3-digit]
-        String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
-
         if (clientID.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Client ID is missing. Please re-login.", "System Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Please enter a Client ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
+        
+        // Generate a new unique ID for this specific job submission
+        // Format: [Client_ID]-[HHmmss]-[Random 3-digit]
+        String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
         
         // --- Get Initial Status and Finalize Submission Data ---
         final String initialStatus = "Pending"; // All submitted jobs start as Pending
@@ -896,7 +894,7 @@ public class ClientGUI extends JPanel {
 
     /** Clears all input fields. */
     private void clearForm() {
-        // clientSecureIdField is non-editable
+        clientIdField.setText("");
         durationSpinner.setValue(1);
         durationUnitBox.setSelectedIndex(0);
         redundancySpinner.setValue(1);
@@ -1057,7 +1055,8 @@ public class ClientGUI extends JPanel {
                 Toolkit.getDefaultToolkit().beep();
                 return;
             }
-            if (string.matches("[a-zA-Z0-9]+")) {
+            String upper = string.toUpperCase();
+            if (upper.matches("[a-zA-Z0-9]+")) {
                 super.insertString(fb, offset, string, attr);
             } else {
                 Toolkit.getDefaultToolkit().beep();

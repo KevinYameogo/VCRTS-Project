@@ -226,29 +226,9 @@ public class LandingPage extends JFrame {
         if (userFromFile != null) {
             // File Found: Authenticate against the file-stored password
             if (userFromFile.getPassword().equals(password)) {
-                
-                // ensure secure ID is assigned upon file load
-                if (userFromFile instanceof Owner) {
-                    Owner owner = (Owner) userFromFile;
-                    if (owner.getSecureOwnerID() == null || owner.getSecureOwnerID().isEmpty()) {
-                        String newID = OwnerIDGenerator.generateRandomID();
-                        owner.setSecureOwnerID(newID);
-                        FileBasedUserStore.saveUser(owner); 
-                        System.out.println("FIX: Assigned missing secureOwnerID to existing owner: " + newID);
-                    }
-                } else if (userFromFile instanceof Client) { 
-                    Client client = (Client) userFromFile;
-                    if (client.getSecureClientID() == null || client.getSecureClientID().isEmpty()) {
-                        String newID = ClientIDGenerator.generateRandomID();
-                        client.setSecureClientID(newID);
-                        FileBasedUserStore.saveUser(client); 
-                        System.out.println("FIX: Assigned missing secureClientID to existing client: " + newID);
-                    }
-                }
-                
                 return userFromFile; // SUCCESS: Logged in with file-stored password
             }
-            // File found
+            // File found but password mismatch
             return null; 
         }
         
@@ -266,14 +246,10 @@ public class LandingPage extends JFrame {
             // SUCCESS: Initial login using the hardcoded password. 
             // Return a temporary object. The user must use 'Generate Pass' to persist this user.
              if (role.equals("Client")) {
-                 //Client must have a new secureClientID generated upon successful bootstrap
                 Client newClient = new Client(username, "Initial Client User", targetPassword, ""); 
-                newClient.setSecureClientID(ClientIDGenerator.generateRandomID()); 
                 return newClient;
             } else {
-                // Owner must have a new secureOwnerID generated upon successful bootstrap
                 Owner newOwner = new Owner(username, "Initial Vehicle Owner", targetPassword, ""); 
-                newOwner.setSecureOwnerID(OwnerIDGenerator.generateRandomID()); 
                 return newOwner;
             }
         }
@@ -304,36 +280,23 @@ public class LandingPage extends JFrame {
         
         String tempPassword = generateTempPassword(username);
         User newUser;
-        String secureID = "";
 
-        // Ensure the correct subclass is instantiated for saving and assign the secure ID
+        // Ensure the correct subclass is instantiated for saving
         if (role.equals("Client")) {
             Client newClient = new Client(username, "Client User", tempPassword, ""); 
-            secureID = ClientIDGenerator.generateRandomID();
-            newClient.setSecureClientID(secureID);
             newUser = newClient;
         } else {
             Owner newOwner = new Owner(username, "Vehicle Owner", tempPassword, ""); 
-            secureID = OwnerIDGenerator.generateRandomID();
-            newOwner.setSecureOwnerID(secureID);
             newUser = newOwner;
         }
         
         // Save the new user object with the temporary password immediately 
         FileBasedUserStore.saveUser(newUser);
 
-        //
-        String secureIDInfo = "";
-        if (newUser instanceof Owner) {
-            secureIDInfo = "\nOwner ID: " + ((Owner)newUser).getSecureOwnerID();
-        } else if (newUser instanceof Client) {
-            secureIDInfo = "\nClient ID: " + ((Client)newUser).getSecureClientID();
-        }
-
         tempPassDisplayArea.setBackground(new Color(200, 255, 200));
         tempPassDisplayArea.setText(
             "SUCCESS: New user file created for '" + username + "'!\n" +
-            "Password: " + tempPassword + secureIDInfo + "\n" +
+            "Password: " + tempPassword + "\n" +
             "Enter this password above to log in."
         );
         infoLabel.setText("Temporary password generated. Log in above.");

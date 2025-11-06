@@ -1,18 +1,13 @@
 import java.io.Serializable;
-import java.util.Random;
 
 public class Owner extends User implements Serializable {
-    private static final long serialVersionUID = 1L; 
-
-    private String secureOwnerID; 
+    private static final long serialVersionUID = 1L;
     
-    private String paymentInfo; 
+    private String paymentInfo;
 
-    // Constructor
     public Owner(String userID, String name, String password, String paymentInfo) {
         super(userID, name, password);
         this.paymentInfo = paymentInfo;
-        this.secureOwnerID = ""; 
     }
 
     @Override
@@ -26,13 +21,5 @@ public class Owner extends User implements Serializable {
 
     public void setPaymentInfo(String paymentInfo) {
         this.paymentInfo = paymentInfo;
-    }
-
-    public String getSecureOwnerID() {
-        return secureOwnerID;
-    }
-
-    public void setSecureOwnerID(String secureOwnerID) {
-        this.secureOwnerID = secureOwnerID;
     }
 }

@@ -1,4 +1,4 @@
-// OwnerGUI.java (FIXED: Owner ID is now fixed, secure, 6-character, and non-editable)
+// OwnerGUI.java (Updated: Owner ID is now manually entered by the user)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.text.AbstractDocument;
@@ -112,13 +112,8 @@ public class OwnerGUI extends JPanel {
 
         // --- Initialize Fields ---
         ownerIdField = new JTextField();
-        
-        // 1. Set the fixed, secure Owner ID from the logged-in user
-        ownerIdField.setText(ownerUser.getSecureOwnerID());
-        // 2. Lock the field, preventing user modification or deletion
-        ownerIdField.setEditable(false);
-        // 3. Remove the filter, as it restricted the new 6-char, special character ID
-        // ((AbstractDocument) ownerIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(4));
+        ((AbstractDocument) ownerIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(6));
+
         
         makeField = new JTextField();
         ((AbstractDocument) makeField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
@@ -148,7 +143,7 @@ public class OwnerGUI extends JPanel {
         gc.gridx = 0;
         gc.gridy = r;
 
-        form.add(new JLabel("Owner ID:"), gc); 
+        form.add(new JLabel("Owner ID(6 chars):"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
         form.add(ownerIdField, gc);
@@ -444,8 +439,13 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
-        // ---Use the non-editable, secured Owner ID ---
+        // --- GET OWNER ID FROM USER INPUT ---
         String ownerId = ownerIdField.getText().trim();
+        
+        if (ownerId.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Please enter an Owner ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
         
         String make = makeField.getText().trim();
         String model = modelField.getText().trim();
@@ -453,8 +453,7 @@ public class OwnerGUI extends JPanel {
         String license = licenseField.getText().trim();
         String state = String.valueOf(stateComboBox.getSelectedItem());
 
-        // We only check if other fields are empty, the ownerId is guaranteed to be set
-        if (ownerId.isEmpty() || make.isEmpty() || model.isEmpty() || license.isEmpty() || state.isEmpty()) {
+        if (make.isEmpty() || model.isEmpty() || license.isEmpty() || state.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please fill in all vehicle fields.");
             return;
         }
@@ -622,6 +621,7 @@ public class OwnerGUI extends JPanel {
     }
 
     private void clearForm() {
+        ownerIdField.setText("");
         makeField.setText("");
         modelField.setText("");
         licenseField.setText("");
@@ -734,7 +734,7 @@ public class OwnerGUI extends JPanel {
                 nameField.setText("");
                 cardField.setText("");
                 cvcField.setText("");
-                    expMonthField.setText("");
+                expMonthField.setText("");
                 expYearField.setText("");
             }
             this.savedInfo = null;
@@ -780,7 +780,8 @@ public class OwnerGUI extends JPanel {
                 Toolkit.getDefaultToolkit().beep();
                 return;
             }
-            if (string.matches("[a-zA-Z0-9]+")) {
+            String upper = string.toUpperCase();
+            if (upper.matches("[a-zA-Z0-9]+")) {
                 super.insertString(fb, offset, string, attr);
             } else {
                 Toolkit.getDefaultToolkit().beep();
@@ -829,7 +830,7 @@ public class OwnerGUI extends JPanel {
     }
 
     /**
-     * *Allows only 7 alphanumeric chars, and forces uppercase.
+     * Allows only 7 alphanumeric chars, and forces uppercase.
      */
     private static class LicensePlateFilter extends DocumentFilter {
         private static final int MAX_LENGTH = 7;

@@ -72,8 +72,8 @@ public class OwnerGUI extends JPanel {
         // Initialize local copy from Owner object
         this.paymentInfo = ownerUser.getPaymentInfo();
 
-        this.CSV_FILE = ownerUser.getUserID() + "_vehicle_entries.csv"; 
-        this.PAYMENT_FILE = ownerUser.getUserID() + "_payment.dat";
+        this.CSV_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_vehicle_entries.csv"; 
+        this.PAYMENT_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_payment.dat";
 
         this.setLayout(new BorderLayout());
 

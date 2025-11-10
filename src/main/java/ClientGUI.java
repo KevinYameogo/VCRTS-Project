@@ -71,8 +71,8 @@ public class ClientGUI extends JPanel {
         this.billingInfo = clientUser.getBillingInfo(); 
 
         // ---User-specific filenames now use the UserID---
-        this.CSV_FILE = clientUser.getUserID() + "_job_entries.csv"; 
-        this.BILLING_FILE = clientUser.getUserID() + "_billing.dat"; 
+        this.CSV_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_job_entries.csv"; 
+        this.BILLING_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_billing.dat"; 
 
         setLayout(new BorderLayout());
 

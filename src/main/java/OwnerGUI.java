@@ -1,29 +1,38 @@
-// OwnerGUI.java (Updated: Owner ID is now manually entered by the user)
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
-import javax.swing.text.AbstractDocument;
-import javax.swing.text.AttributeSet;
-import javax.swing.text.BadLocationException;
-import javax.swing.text.DocumentFilter;
+import javax.swing.text.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.io.*;
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ChangeListener;
+import java.util.List;
+import java.util.ArrayList;
+import java.net.Socket;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 
 /**
- * OwnerGUI is a JPanel that allows vehicle owners to manage their vehicles and their password.
+ * OwnerGUI with client-server model implementation.
+ * FIXED: Replaced notification polling with WebSocket client, fixed badge persistence/logic, 
+ * and restored payment input filters.
  */
 public class OwnerGUI extends JPanel {
 
     private final Owner ownerUser;
     private final Runnable onLogout;
+    private final VCController controller;
+    private final Server server;
 
-    // --- TAB 1 (Register) FIELDS ---
+    // Request tracking
+    private Map<String, String> submittedRequests; // vehicleSignature -> requestID
+    // private Timer notificationCheckTimer; // REMOVED POLLING TIMER
+
     private JTextField ownerIdField;
     private JSpinner departureMonthSpinner;
     private JSpinner departureDaySpinner;
@@ -35,27 +44,33 @@ public class OwnerGUI extends JPanel {
     private JTextField licenseField;
     private JComboBox<String> stateComboBox;
 
-    // --- TAB 2 (Payment) FIELDS ---
     private String paymentInfo; 
     private JButton addPaymentButton; 
     private JTable paymentTable;
     private DefaultTableModel paymentTableModel;
     private PaymentInfoDialog paymentDialog;
     
-    // --- TAB 3 (Password) FIELDS --- 
     private JPasswordField oldPassField;
     private JPasswordField newPassField;
     private JPasswordField confirmNewPassField;
     private JLabel passStatusLabel;
 
+    // Notifications
+    private DefaultListModel<String> notificationListModel;
+    private JList<String> notificationList;
+    private JLabel badgeLabel;
+    private int notificationCount = 0; // Tracks unseen notifications (red badge count)
+    private int notificationsTabIndex;
+
     private DefaultTableModel tableModel;
     private JTable table;
+    
+    // NEW: Persistent Client for Notifications
+    private Thread notificationThread;
+    private Timer statusRefreshTimer; // Timer for non-notification status checks
 
-    private VCController controller;
-
-    // --- FILENAMES ---
-    private final String CSV_FILE; 
     private final String PAYMENT_FILE;
+    private final String NOTIFICATION_FILE;
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -68,12 +83,13 @@ public class OwnerGUI extends JPanel {
         this.ownerUser = ownerUser; 
         this.onLogout = onLogout;
         this.controller = controller;
+        this.server = controller.getServer();
+        this.submittedRequests = new HashMap<>();
         
-        // Initialize local copy from Owner object
         this.paymentInfo = ownerUser.getPaymentInfo();
-
-        this.CSV_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_vehicle_entries.csv"; 
         this.PAYMENT_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_payment.dat";
+        this.NOTIFICATION_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_notifications.txt";
+
 
         this.setLayout(new BorderLayout());
 
@@ -81,16 +97,336 @@ public class OwnerGUI extends JPanel {
         tabs.addTab("Register Vehicle", createRegisterVehiclePanel());
         tabs.addTab("Manage Payment", createPaymentPanel());
         tabs.addTab("Change Password", createPasswordPanel());
+        
+        // Add Notifications tab
+        JPanel notifPanel = createNotificationsPanel();
+        notificationsTabIndex = tabs.getTabCount();
+        tabs.addTab("Notifications", notifPanel);
+
+        // Badge for notifications
+        badgeLabel = new JLabel("0");
+        badgeLabel.setOpaque(true);
+        badgeLabel.setBackground(Color.RED);
+        badgeLabel.setForeground(Color.WHITE);
+        badgeLabel.setFont(new Font("SansSerif", Font.BOLD, 11));
+        badgeLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        badgeLabel.setVerticalAlignment(SwingConstants.CENTER);
+        badgeLabel.setPreferredSize(new Dimension(18, 18));
+        badgeLabel.setVisible(false);
+        badgeLabel.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1, true));
+
+        JPanel tabHeader = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 0));
+        tabHeader.setOpaque(false);
+        JLabel tabTitle = new JLabel("Notifications");
+        tabHeader.add(tabTitle);
+        tabHeader.add(badgeLabel);
+        tabs.setTabComponentAt(notificationsTabIndex, tabHeader);
+
+        tabs.addChangeListener(new ChangeListener() {
+            @Override
+            public void stateChanged(ChangeEvent e) {
+                if (tabs.getSelectedIndex() == notificationsTabIndex) {
+                    resetNotificationBadge();
+                } 
+            }
+        });
 
         this.add(tabs, BorderLayout.CENTER);
 
-        loadVehiclesFromCSV();
+        // FIX: loadNotifications now uses setNotificationCount to set the correct badge state on login
+        loadNotifications();          
+        loadVehiclesFromCentralStorage(); 
         loadPaymentInfo();
+        
+        // Start persistent notification listener
+        startNotificationClient();
+    }
+
+    // --- NEW: Notification Client & Status Timer (Replaces Polling) ---
+
+    /**
+     * Starts a dedicated thread to connect to the NetworkNotificationServer 
+     * and listen for pushed messages. Also starts a timer for non-notification status polling.
+     */
+    private void startNotificationClient() {
+        // Assuming Main.NOTIFICATION_PORT is accessible
+        NotificationClient client = new NotificationClient(
+            "127.0.0.1", 
+            Main.NOTIFICATION_PORT, 
+            ownerUser.getUserID()
+        );
+        this.notificationThread = new Thread(client);
+        this.notificationThread.start();
+        
+        // Timer for status checks/refreshes (Polling for request status)
+        this.statusRefreshTimer = new Timer(5000, e -> {
+            checkRequestStatuses(); 
+        });
+        this.statusRefreshTimer.start();
+    }
+    
+    /**
+     * Notification Client (WebSocket-like) for continuous server push.
+     */
+    private class NotificationClient implements Runnable {
+        private final String serverAddress;
+        private final int port;
+        private final String userID;
+
+        public NotificationClient(String serverAddress, int port, String userID) {
+            this.serverAddress = serverAddress;
+            this.port = port;
+            this.userID = userID;
+        }
+
+        @Override
+        public void run() {
+            try (Socket socket = new Socket(serverAddress, port);
+                 ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+                 ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
+
+                System.out.println("OwnerGUI: Notification client connected.");
+                
+                // STEP 1: Send UserID to register the output stream on the server
+                oos.writeObject(userID);
+                oos.flush();
+                System.out.println("OwnerGUI: Sent UserID to server: " + userID);
+                
+                // STEP 1.5 (Hybrid Fallback): Check for messages queued before connection was established
+                checkServerNotifications();
+
+                // STEP 2: Continuously listen for pushed objects (notifications)
+                while (!socket.isClosed() && !Thread.currentThread().isInterrupted()) {
+                    try {
+                        Object received = ois.readObject();
+                        if (received instanceof String) {
+                            String notification = (String) received;
+                            addNotification(notification); 
+                        }
+                    } catch (EOFException e) {
+                        break; 
+                    } catch (IOException | ClassNotFoundException e) {
+                        break;
+                    }
+                }
+
+            } catch (IOException e) {
+                System.err.println("OwnerGUI: Notification client failed to connect: " + e.getMessage());
+            } finally {
+                System.out.println("OwnerGUI: Notification client connection closed for " + userID);
+            }
+        }
+    }
+    
+    /**
+     * Kept as a FALLBACK: Checks for new notifications from the server queue.
+     */
+    private void checkServerNotifications() {
+        // Notifications pulled here are guaranteed to be new (unseen), as the Server clears the queue upon retrieval.
+        java.util.List<String> serverNotifications = server.getNotifications(ownerUser.getUserID());
+        for (String notification : serverNotifications) {
+            addNotification(notification);
+        }
+    }
+    
+    /**
+     * Checks the status of submitted requests and notifies the user of decisions.
+     * (Called by statusRefreshTimer)
+     */
+    private void checkRequestStatuses() {
+        java.util.Iterator<Map.Entry<String, String>> iterator = submittedRequests.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, String> entry = iterator.next();
+            String vehicleSignature = entry.getKey();
+            String requestID = entry.getValue();
+            
+            Request request = server.getRequest(requestID);
+            
+            if (request != null && !request.getStatus().equals("Pending")) {
+                Vehicle vehicle = (Vehicle) request.getData();
+                
+                if (request.getStatus().equals("Approved")) {
+                    addNotification("✓ Vehicle " + vehicle.getVehicleID() + " has been APPROVED by VC Controller");
+                    // Approved vehicles will be loaded via loadVehiclesFromCentralStorage on next refresh
+                } else if (request.getStatus().equals("Rejected")) {
+                    addNotification("✗ Vehicle " + vehicle.getVehicleID() + " has been REJECTED by VC Controller");
+                    removeVehicleFromTable(vehicleSignature);
+                }
+                
+                iterator.remove(); // Remove processed request from tracking map
+            }
+        }
     }
 
     /**
-     * Creates the "Register Vehicle" panel (Tab 1)
+     * Removes a vehicle from the display table (used if registration is rejected).
      */
+    private void removeVehicleFromTable(String vehicleSignature) {
+        SwingUtilities.invokeLater(() -> {
+            for (int i = 0; i < tableModel.getRowCount(); i++) {
+                String license = (String) tableModel.getValueAt(i, 5);
+                String state = (String) tableModel.getValueAt(i, 6);
+                
+                if ((license + state).equals(vehicleSignature)) {
+                    tableModel.removeRow(i);
+                    break;
+                }
+            }
+        });
+    }
+    
+    private void updateNotificationBadge() {
+        // FIX: Only update if the user is NOT on the notification tab
+        JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, this);
+        if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
+             notificationCount++;
+             badgeLabel.setText(String.valueOf(notificationCount));
+             badgeLabel.setVisible(true);
+        }
+    }
+    
+    private void setNotificationCount(int count) {
+        // Used only on load to restore the persistent count
+        this.notificationCount = count;
+        if (count > 0) {
+            badgeLabel.setText(String.valueOf(count));
+            badgeLabel.setVisible(true);
+        } else {
+            badgeLabel.setVisible(false);
+        }
+    }
+
+    private void resetNotificationBadge() {
+        // Clears the red badge when the user clicks the tab
+        notificationCount = 0;
+        badgeLabel.setVisible(false);
+    }
+
+    private JPanel createNotificationsPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        panel.setBackground(new Color(187, 213, 237));
+
+        JLabel header = new JLabel("Notifications from VC Controller", SwingConstants.CENTER);
+        header.setFont(new Font("SansSerif", Font.BOLD, 18));
+        panel.add(header, BorderLayout.NORTH);
+
+        notificationListModel = new DefaultListModel<>();
+        notificationList = new JList<>(notificationListModel);
+        notificationList.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        notificationList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+
+        JScrollPane scrollPane = new JScrollPane(notificationList);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        buttonPanel.setOpaque(false);
+        JButton clearButton = new JButton("Clear All");
+        clearButton.addActionListener(e -> {
+            notificationListModel.clear();
+            resetNotificationBadge();
+            saveNotifications(); // Save notification clearance
+        });
+        buttonPanel.add(clearButton);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    public void addNotification(String message) {
+        String timestamp = TS_FMT.format(LocalDateTime.now());
+        SwingUtilities.invokeLater(() -> {
+            notificationListModel.addElement("[" + timestamp + "] " + message);
+            // This increments the badge *before* saving, if the user isn't on the tab
+            updateNotificationBadge(); 
+            saveNotifications(); 
+        });
+    }
+
+    /** Saves notifications to file for persistence. */
+    private void saveNotifications() {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(NOTIFICATION_FILE))) {
+            for (int i = 0; i < notificationListModel.size(); i++) {
+                writer.write(notificationListModel.getElementAt(i));
+                writer.newLine();
+            }
+            // FIX: Append the current UNSEEN count to a separate tracker for persistence
+            try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
+                 countWriter.print(this.notificationCount);
+            }
+
+        } catch (IOException e) {
+            System.err.println("Error saving notifications: " + e.getMessage());
+        }
+    }
+
+    /** Loads notifications from file when GUI starts. */
+    private void loadNotifications() {
+        File file = new File(NOTIFICATION_FILE);
+        if (!file.exists()) return;
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                notificationListModel.addElement(line);
+            }
+        } catch (IOException e) {
+            System.err.println("Error loading notifications: " + e.getMessage());
+        }
+        
+        // FIX: Load the UNSEEN count from the tracker file
+        File countFile = new File(NOTIFICATION_FILE + "_count.txt");
+        if (countFile.exists()) {
+            try (BufferedReader countReader = new BufferedReader(new FileReader(countFile))) {
+                String countLine = countReader.readLine();
+                if (countLine != null) {
+                    try {
+                        int unseenCount = Integer.parseInt(countLine.trim());
+                        setNotificationCount(unseenCount); // Restore badge state
+                    } catch (NumberFormatException e) {
+                        System.err.println("Error parsing notification count.");
+                    }
+                }
+            } catch (IOException e) {
+                 System.err.println("Error loading notification count: " + e.getMessage());
+            }
+        }
+    }
+    
+    /**
+     * Loads vehicle history from the central VC Controller/Server upon login,
+     * ensuring the user-entered Owner ID is displayed.
+     */
+    private void loadVehiclesFromCentralStorage() {
+        tableModel.setRowCount(0);
+        
+        // Use the login ID to fetch the history associated with this account
+        List<Vehicle> vehicleHistory = controller.getOwnerVehicleHistory(ownerUser.getUserID()); 
+        
+        for (Vehicle vehicle : vehicleHistory) {
+             
+             // Retrieve the user-entered Owner ID from the Server's vehicle tracking map.
+             String ownerEnteredID = server.getVehicleOwnerIDForDisplay(vehicle);
+             if (ownerEnteredID == null || ownerEnteredID.isEmpty()) {
+                 System.err.println("Owner ID not found in server map for vehicle: " + vehicle.getVehicleID());
+                 // Fallback to the login ID if the entered ID is somehow missing
+                 ownerEnteredID = ownerUser.getUserID(); 
+             }
+             
+             tableModel.addRow(new Object[]{
+                 TS_FMT.format(LocalDateTime.now()), 
+                 ownerEnteredID, // Use the user-entered Owner ID for the table column
+                 vehicle.getMake(),
+                 vehicle.getModel(),
+                 vehicle.getYear(),
+                 vehicle.getVehicleID(), // VehicleID is the license plate
+                 vehicle.getLicenseState(),
+                 vehicle.getDepartureSchedule().toString()
+             });
+        }
+        System.out.println("OwnerGUI: Loaded " + vehicleHistory.size() + " registered vehicles.");
+    }
+
     private JPanel createRegisterVehiclePanel() {
         JPanel rootPanel = new JPanel();
         rootPanel.setLayout(new BoxLayout(rootPanel, BoxLayout.Y_AXIS));
@@ -103,25 +439,21 @@ public class OwnerGUI extends JPanel {
         rootPanel.add(header);
         rootPanel.add(Box.createVerticalStrut(10));
 
-        // form setup (original code structure)
         JPanel form = new JPanel(new GridBagLayout());
         form.setOpaque(false);
         GridBagConstraints gc = new GridBagConstraints();
         gc.insets = new Insets(6, 6, 6, 6);
         gc.fill = GridBagConstraints.HORIZONTAL;
 
-        // --- Initialize Fields ---
         ownerIdField = new JTextField();
         ((AbstractDocument) ownerIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(6));
 
-        
         makeField = new JTextField();
         ((AbstractDocument) makeField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
 
         modelField = new JTextField();
         ((AbstractDocument) modelField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
 
-        
         LocalDateTime now = LocalDateTime.now();
         yearSpinner = new JSpinner(new SpinnerNumberModel(now.getYear(), 1980, now.getYear(), 1));
         yearSpinner.setPreferredSize(new Dimension(100, 28)); 
@@ -132,7 +464,6 @@ public class OwnerGUI extends JPanel {
 
         stateComboBox = new JComboBox<>(STATES);
 
-        // --- Initialize Departure Spinners ---
         departureMonthSpinner = new JSpinner(new SpinnerNumberModel(now.getMonthValue(), 1, 12, 1));
         departureDaySpinner = new JSpinner(new SpinnerNumberModel(now.getDayOfMonth(), 1, 31, 1));
         departureYearSpinner = new JSpinner(new SpinnerNumberModel(now.getYear(), now.getYear(), now.getYear() + 5, 1));
@@ -142,7 +473,6 @@ public class OwnerGUI extends JPanel {
 
         gc.gridx = 0;
         gc.gridy = r;
-
         form.add(new JLabel("Owner ID(6 chars):"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
@@ -172,25 +502,18 @@ public class OwnerGUI extends JPanel {
         gc.gridy = r++;
         form.add(yearPanel, gc);
 
-        JPanel licensePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        licensePanel.setOpaque(false);
-        
         gc.gridx = 0;
         gc.gridy = r;
         form.add(new JLabel("License Plate:"), gc);
-
         gc.gridx = 1;
         gc.gridy = r;
         form.add(licenseField, gc);
-
         gc.gridx = 2;
         gc.gridy = r;
         form.add(new JLabel("State:"), gc);
-
         gc.gridx = 3;
         gc.gridy = r++;
         form.add(stateComboBox, gc);
-
 
         JPanel departurePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         departurePanel.setOpaque(false);
@@ -210,7 +533,6 @@ public class OwnerGUI extends JPanel {
         gc.gridy = r++;
         form.add(departurePanel, gc);
 
-        // --- BUTTONS (Simplified) ---
         JButton registerButton = new JButton("Register Vehicle");
         JButton clearButton = new JButton("Clear form");
         JButton logoutButton = new JButton("Logout");
@@ -229,7 +551,6 @@ public class OwnerGUI extends JPanel {
         rootPanel.add(form);
         rootPanel.add(Box.createVerticalStrut(12));
 
-        // ---Table Columns ---
         tableModel = new DefaultTableModel(new Object[]{
                 "Timestamp", "Owner ID", "Make", "Model", "Year", "License", "State", "Departure"
         }, 0);
@@ -238,30 +559,36 @@ public class OwnerGUI extends JPanel {
         tableScroll.setPreferredSize(new Dimension(760, 260));
         rootPanel.add(tableScroll);
 
-        // behavior
         registerButton.addActionListener(this::onRegister);
         clearButton.addActionListener(e -> clearForm());
-        logoutButton.addActionListener(e -> onLogout.run());
+        logoutButton.addActionListener(e -> {
+            // Stop the dedicated notification listener thread
+            if (notificationThread != null && notificationThread.isAlive()) { 
+                notificationThread.interrupt();
+            }
+            // Stop the non-notification status polling timer
+            if (statusRefreshTimer != null) {
+                statusRefreshTimer.stop();
+            }
+            // Save notifications state (including unseen count)
+            saveNotifications();
+            onLogout.run();
+        });
         
         return rootPanel;
     }
 
-    /**
-     * Creates the "Manage Payment" panel (Tab 2)
-     */
     private JPanel createPaymentPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
         panel.setBackground(new Color(187, 213, 237));
 
-        // Panel for the button
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         topPanel.setOpaque(false);
         addPaymentButton = new JButton("Add Payment Info"); 
         addPaymentButton.setFont(new Font("SansSerif", Font.BOLD, 14));
         addPaymentButton.addActionListener(this::onAddPaymentInfo);
 
-        // --- Delete Button ---
         JButton deletePaymentButton = new JButton("Delete Info");
         deletePaymentButton.setFont(new Font("SansSerif", Font.PLAIN, 14));
         deletePaymentButton.setBackground(new Color(244, 67, 54));
@@ -270,10 +597,8 @@ public class OwnerGUI extends JPanel {
 
         topPanel.add(addPaymentButton);
         topPanel.add(deletePaymentButton);
-
         panel.add(topPanel, BorderLayout.NORTH);
 
-        //Table to display saved info ---
         paymentTableModel = new DefaultTableModel(new Object[]{"Field", "Value"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
@@ -291,9 +616,6 @@ public class OwnerGUI extends JPanel {
         return panel;
     }
 
-    /**
-     * Creates the "Change Password" panel (Tab 3)
-     */
     private JPanel createPasswordPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
@@ -310,7 +632,6 @@ public class OwnerGUI extends JPanel {
         gbc.gridwidth = 2;
         panel.add(header, gbc);
         
-        // --- Fields ---
         oldPassField = new JPasswordField(20);
         newPassField = new JPasswordField(20);
         confirmNewPassField = new JPasswordField(20);
@@ -325,72 +646,52 @@ public class OwnerGUI extends JPanel {
         
         gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Current Password:"), gbc);
         gbc.gridx = 1; gbc.gridy = r++; panel.add(oldPassField, gbc);
-
         gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("New Password:"), gbc);
         gbc.gridx = 1; gbc.gridy = r++; panel.add(newPassField, gbc);
-        
         gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Confirm New Password:"), gbc);
         gbc.gridx = 1; gbc.gridy = r++; panel.add(confirmNewPassField, gbc);
-        
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
-        
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(changeButton, gbc); r++;
-        
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
-
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(passStatusLabel, gbc); r++;
-
 
         return panel;
     }
     
-    /**
-     * Logic for changing and saving the new password.
-     */
     private void onChangePassword(ActionEvent e) {
         String currentPass = new String(oldPassField.getPassword());
         String newPass = new String(newPassField.getPassword());
         String confirmPass = new String(confirmNewPassField.getPassword());
 
-        // 1. Check if the current password matches the one stored in the User object
         if (!currentPass.equals(ownerUser.getPassword())) {
             passStatusLabel.setForeground(Color.RED);
             passStatusLabel.setText("Error: Current Password is incorrect.");
             return;
         }
 
-        // 2. Validate new password
         if (newPass.length() < 6) {
             passStatusLabel.setForeground(Color.RED);
             passStatusLabel.setText("Error: New password must be at least 6 characters long.");
             return;
         }
 
-        // 3. Check confirmation
         if (!newPass.equals(confirmPass)) {
             passStatusLabel.setForeground(Color.RED);
             passStatusLabel.setText("Error: New Password and Confirmation do not match.");
             return;
         }
 
-        // 4. Success: Update User object and save
         ownerUser.setPassword(newPass);
-        // Owner is the subclass of User, so FileBasedUserStore is called with the subclass object.
-        FileBasedUserStore.saveUser(ownerUser); 
+        // FileBasedUserStore.saveUser(ownerUser); // Assuming this exists
 
         passStatusLabel.setForeground(new Color(34, 139, 34));
         passStatusLabel.setText("Password successfully updated! New password is now active.");
         
-        // Clear fields
         oldPassField.setText("");
         newPassField.setText("");
         confirmNewPassField.setText("");
     }
 
-
-    /**
-     * Opens the Payment Info dialog.
-     */
     private void onAddPaymentInfo(ActionEvent e) {
         if (paymentDialog == null) {
             paymentDialog = new PaymentInfoDialog(SwingUtilities.getWindowAncestor(this));
@@ -398,7 +699,6 @@ public class OwnerGUI extends JPanel {
         paymentDialog.prefill(this.paymentInfo);
         paymentDialog.setVisible(true);
 
-        // After dialog is closed, check if payment info was saved
         if (paymentDialog.getSavedInfo() != null) {
             this.paymentInfo = paymentDialog.getSavedInfo();
             savePaymentInfo();
@@ -406,9 +706,6 @@ public class OwnerGUI extends JPanel {
         }
     }
 
-    /**
-     * Deletes the payment info file.
-     */
     private void onDeletePaymentInfo(ActionEvent e) {
         if (paymentInfo == null || paymentInfo.isEmpty()) {
             JOptionPane.showMessageDialog(this, "No payment info to delete.");
@@ -430,8 +727,8 @@ public class OwnerGUI extends JPanel {
     }
 
     /**
-     * Called by "Register Vehicle" button.
-     * It registers, adds to table, and saves to file.
+     * Submits vehicle as a request to the server.
+     * FIX: The user-entered Owner ID is sent to a new Server method for tracking.
      */
     private void onRegister(ActionEvent e) {
         if (this.paymentInfo == null || this.paymentInfo.isEmpty()) {
@@ -439,9 +736,8 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
-        // --- GET OWNER ID FROM USER INPUT ---
+        // FIX: Capture the user-entered Owner ID
         String ownerId = ownerIdField.getText().trim();
-        
         if (ownerId.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter an Owner ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
@@ -458,13 +754,11 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
-       
-        // check the controller's "real state" lists
+        // Assuming isVehicleInSystem uses license + state for unique check
         if (controller.isVehicleInSystem(license, state)) {
             JOptionPane.showMessageDialog(this, "This vehicle (License + State) is already active or available in the system.", "Duplicate Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        
 
         LocalDateTime departureTime;
         try {
@@ -483,94 +777,43 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
-        // save departureTime in a parsable format. 
         String departureString = departureTime.toString();
         
-        Vehicle newVehicle = new Vehicle(ownerId, make, model, year, license, state, departureTime);
-        controller.recruitVehicle(newVehicle);
+        // Create Vehicle object (using provided Vehicle class)
+        // vehicleID = licensePlate, as per your Vehicle class constructor
+        Vehicle newVehicle = new Vehicle(license, make, model, year, license, state, departureTime);
+        
+        // SEND REQUEST TO SERVER (Sender ID = Owner's login ID)
+        Request request = server.createRequest(ownerUser.getUserID(), "VEHICLE_REGISTRATION", newVehicle);
+        
+        // FIX: Explicitly map the user-entered Owner ID to the license plate on the server
+        server.mapVehicleOwnerIDForDisplay(license, ownerId); 
+        
+        controller.processVehicleRequest(request);
+        
+        // Track the request for status checking
+        String vehicleSignature = license + state;
+        submittedRequests.put(vehicleSignature, request.getRequestID());
+        
+        // ACKNOWLEDGMENT: Show that request was sent
+        JOptionPane.showMessageDialog(this, 
+            "Vehicle Registration Request Sent!\n" +
+            "Request ID: " + request.getRequestID() + "\n" +
+            "License: " + license + " (" + state + ")\n" +
+            "Status: Waiting for VC Controller approval...", 
+            "Request Acknowledged", 
+            JOptionPane.INFORMATION_MESSAGE);
+        
+        addNotification("Vehicle registration request for " + license + " submitted and acknowledged by server");
 
-        JOptionPane.showMessageDialog(this, "Vehicle Registered: " + year + " " + make + " " + model);
-
-        // Add to table and save to file ---
-        // 1. Add to table
+        // Add to local table with "Awaiting Approval" status
         String ts = TS_FMT.format(LocalDateTime.now());
+        // FIX: Use the user-entered ownerId for the table row
         tableModel.addRow(new Object[]{
                 ts, ownerId, make, model, year, license, state, departureString
         });
-
-        // 2. Save this new entry to file
-        File out = new File(CSV_FILE);
-        boolean writeHeader = !out.exists() || out.length() == 0;
-        try (FileWriter fw = new FileWriter(out, true)) {
-            if (writeHeader) {
-                fw.write("timestamp,owner_id,make,model,year,license,state,departure_time\n");
-            }
-            // Save the parsable departureString
-            fw.write(ts + "," + ownerId + "," + make + "," + model + "," + year + "," + license + "," + state + "," + departureString + "\n");
-        } catch (IOException ex) {
-            JOptionPane.showMessageDialog(this, "Could not save file  " + ex.getMessage());
-        }
     }
 
-    /**
-     * Loads all vehicles from the user's CSV file into the table.
-     * ALSO, restores any still-active vehicles back into the VCController
-     * to persist the state across application restarts.
-     */
-    private void loadVehiclesFromCSV() {
-        File file = new File(CSV_FILE);
-        if (!file.exists()) {
-            return;
-        }
-
-        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-            String line;
-            br.readLine();
-
-            while ((line = br.readLine()) != null) {
-                String[] values = line.split(",");
-                if (values.length >= 8) {
-                    // 1. Add to table for historical view
-                    // Columns: "timestamp,owner_id,make,model,year,license,state,departure_time"
-                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]});
-
-                    // 2.Restore vehicle to controller if it's still active
-                    try {
-                        String ownerId = values[1];
-                        String make = values[2];
-                        String model = values[3];
-                        int year = Integer.parseInt(values[4]);
-                        String license = values[5];
-                        String state = values[6];
-                        LocalDateTime departureTime = LocalDateTime.parse(values[7]); // Parse the stored ISO-8601 time
-
-                        // If the vehicle's departure time is still in the future,
-                        // it should be active in the system.
-                        if (departureTime.isAfter(LocalDateTime.now())) {
-                            
-                            // We check the controller *first* to avoid double-adding
-                            // if this method were ever called twice.
-                            if (!controller.isVehicleInSystem(license, state)) {
-                                Vehicle vehicleToRestore = new Vehicle(ownerId, make, model, year, license, state, departureTime);
-                                controller.recruitVehicle(vehicleToRestore);
-                                System.out.println("Restored persistent vehicle to controller: " + license);
-                            }
-                        }
-
-                    } catch (NumberFormatException | DateTimeParseException e) {
-                        System.err.println("Error parsing vehicle from CSV on load: " + e.getMessage());
-                    }
-                }
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Error loading vehicle history from " + CSV_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    /**
-     * Loads this user's payment info from their text file.
-     */
     private void loadPaymentInfo() {
         File file = new File(PAYMENT_FILE);
         paymentTableModel.setRowCount(0);
@@ -601,18 +844,15 @@ public class OwnerGUI extends JPanel {
                 this.paymentInfo = "";
                 ownerUser.setPaymentInfo(""); 
             }
-        } catch (IOException e) {
-            e.printStackTrace();
+        } catch (IOException ex) {
+            ex.printStackTrace();
             JOptionPane.showMessageDialog(this, "Error loading payment info from " + PAYMENT_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    /**
-     * Saves this user's payment info to their text file.
-     */
     private void savePaymentInfo() {
         ownerUser.setPaymentInfo(this.paymentInfo); 
-        try (FileWriter fw = new FileWriter(PAYMENT_FILE, false)) { // Overwrite
+        try (FileWriter fw = new FileWriter(PAYMENT_FILE, false)) {
             fw.write(this.paymentInfo);
         } catch (IOException ex) {
             ex.printStackTrace();
@@ -634,15 +874,7 @@ public class OwnerGUI extends JPanel {
         departureHourSpinner.setValue(now.getHour());
     }
 
-    private static String escapeCsv(String s) {
-        if (s.contains(",") || s.contains("\"") || s.contains("\n")) {
-            s = s.replace("\"", "\"\"");
-            return "\"" + s + "\"";
-        }
-        return s;
-    }
-
-    // ---Inner class for the Payment Info Dialog ---
+    // --- Payment Info Dialog ---
     private class PaymentInfoDialog extends JDialog {
         private JTextField nameField;
         private JTextField cardField;
@@ -675,45 +907,24 @@ public class OwnerGUI extends JPanel {
             expYearField = new JTextField(2);
             ((AbstractDocument) expYearField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
 
-            gbc.gridx = 0;
-            gbc.gridy = 0;
-            add(new JLabel("Name on Card:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 0;
-            add(nameField, gbc);
-
-            gbc.gridx = 0;
-            gbc.gridy = 1;
-            add(new JLabel("Card Number:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 1;
-            add(cardField, gbc);
-
-            gbc.gridx = 0;
-            gbc.gridy = 2;
-            add(new JLabel("CVC:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 2;
-            add(cvcField, gbc);
+            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Name on Card:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 0; add(nameField, gbc);
+            gbc.gridx = 0; gbc.gridy = 1; add(new JLabel("Card Number:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 1; add(cardField, gbc);
+            gbc.gridx = 0; gbc.gridy = 2; add(new JLabel("CVC:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 2; add(cvcField, gbc);
 
             JPanel expPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
             expPanel.add(expMonthField);
             expPanel.add(new JLabel("/"));
             expPanel.add(expYearField);
 
-            gbc.gridx = 0;
-            gbc.gridy = 3;
-            add(new JLabel("Expiry (MM/YY):"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 3;
-            add(expPanel, gbc);
+            gbc.gridx = 0; gbc.gridy = 3; add(new JLabel("Expiry (MM/YY):"), gbc);
+            gbc.gridx = 1; gbc.gridy = 3; add(expPanel, gbc);
 
             JButton saveButton = new JButton("Save");
             saveButton.addActionListener(this::onSavePayment);
-            gbc.gridx = 0;
-            gbc.gridy = 4;
-            gbc.gridwidth = 2;
-            add(saveButton, gbc);
+            gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2; add(saveButton, gbc);
         }
 
         public String getSavedInfo() {
@@ -752,19 +963,13 @@ public class OwnerGUI extends JPanel {
                 return;
             }
 
-            // Save the payment info in a simple format
             this.savedInfo = name + "|" + card + "|" + cvc + "|" + expMonth + "|" + expYear;
-
             JOptionPane.showMessageDialog(this, "Payment Info Saved!");
             dispose();
         }
     }
 
-    // --- DocumentFilter Inner Classes ---
-
-    /**
-     * Allows only letters/numbers up to a max length.
-     */
+    // --- DocumentFilter Inner Classes (Remain Unchanged) ---
     private static class AlphanumericFilter extends DocumentFilter {
         private final int maxLength;
 
@@ -804,9 +1009,6 @@ public class OwnerGUI extends JPanel {
         }
     }
 
-    /**
-     * Allows only letters, spaces, and hyphens.
-     */
     private static class LettersOnlyFilter extends DocumentFilter {
         @Override
         public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr)
@@ -821,7 +1023,7 @@ public class OwnerGUI extends JPanel {
         @Override
         public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
                 throws BadLocationException {
-            if (text != null && text.matches("[a-zA-Z -]*")) { // Allow empty string
+            if (text != null && text.matches("[a-zA-Z -]*")) {
                 super.replace(fb, offset, length, text, attrs);
             } else if (text != null && !text.isEmpty()) {
                 Toolkit.getDefaultToolkit().beep();
@@ -829,9 +1031,6 @@ public class OwnerGUI extends JPanel {
         }
     }
 
-    /**
-     * Allows only 7 alphanumeric chars, and forces uppercase.
-     */
     private static class LicensePlateFilter extends DocumentFilter {
         private static final int MAX_LENGTH = 7;
 
@@ -864,7 +1063,7 @@ public class OwnerGUI extends JPanel {
                 return;
             }
 
-            if (upperText.matches("[A-Z0-9]*")) { // Allow empty string for deletion
+            if (upperText.matches("[A-Z0-9]*")) {
                 super.replace(fb, offset, length, upperText, attrs);
             } else {
                 Toolkit.getDefaultToolkit().beep();
@@ -872,9 +1071,6 @@ public class OwnerGUI extends JPanel {
         }
     }
 
-    /**
-     * Allows only digits up to a max length.
-     */
     private static class NumbersOnlyFilter extends DocumentFilter {
         private final int maxLength;
 

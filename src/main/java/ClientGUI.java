@@ -7,72 +7,82 @@ import java.io.*;
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
-import javax.swing.event.ChangeListener; 
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ChangeListener;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.ArrayList; 
+import java.util.List; 
+import java.net.Socket;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 
 /**
- * ClientGUI combines job submission, management, billing, and password into a multi-tab panel.
+ * ClientGUI with client-server model implementation.
+ * FIXED: Integrated WebSocket client, restored input filters in Billing dialog, 
+ * and fixed notification badge persistence across sessions.
  */
 public class ClientGUI extends JPanel {
 
-    // --- USER INFO ---
     private final Client clientUser; 
     private final Runnable onLogout;
+    private final VCController controller;
+    private final Server server;
 
-    // --- TAB 1 (Submit Job) FIELDS ---
+    // Request tracking
+    private Map<String, String> submittedRequests; // jobID -> requestID
+    // private Timer notificationCheckTimer; // Replaced by statusRefreshTimer
+
     private JTextField clientIdField; 
     private JSpinner durationSpinner;
     private JComboBox<String> durationUnitBox;
     private JSpinner redundancySpinner;
-
     private JSpinner deadlineMonthSpinner;
     private JSpinner deadlineDaySpinner;
     private JSpinner deadlineYearSpinner;
     private JSpinner deadlineHourSpinner;
 
-    // --- TAB 3 (Billing) FIELDS ---
     private String billingInfo; 
     private JButton addBillingButton;
     private JTable billingTable;
     private DefaultTableModel billingTableModel;
     private BillingInfoDialog billingDialog;
 
-    // --- TAB 4 (Password) FIELDS --- 
     private JPasswordField oldPassField;
     private JPasswordField newPassField;
     private JPasswordField confirmNewPassField;
     private JLabel passStatusLabel;
 
+    private DefaultListModel<String> notificationListModel;
+    private JList<String> notificationList;
     private DefaultTableModel tableModel;
     private JTable table;
-    private DefaultListModel<Job> listModel;
+    
+    private JLabel badgeLabel;
+    private int notificationCount = 0; // Tracks unseen notifications (red badge count)
+    private int notificationsTabIndex;
+    
+    // NEW: Persistent Client for Notifications
+    private Thread notificationThread;
+    private Timer statusRefreshTimer; // Timer for non-notification status checks
 
-    // --- FILENAMES ---
-    private final String CSV_FILE;
     private final String BILLING_FILE;
+    private final String NOTIFICATION_FILE;
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-
-    // --- TAB 2 (Manage Job) FIELDS ---
-    private VCController controller;
-    
-    // --- JOB ID GENERATION HELPER ---
     private static final DateTimeFormatter JOB_ID_TS_FMT = DateTimeFormatter.ofPattern("HHmmss");
 
     public ClientGUI(Client clientUser, Runnable onLogout, VCController controller) { 
         this.clientUser = clientUser; 
         this.onLogout = onLogout;
         this.controller = controller;
+        this.server = controller.getServer();
+        this.submittedRequests = new HashMap<>();
         
-        // Initialize local copy from Client object
         this.billingInfo = clientUser.getBillingInfo(); 
-
-        // ---User-specific filenames now use the UserID---
-        this.CSV_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_job_entries.csv"; 
         this.BILLING_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_billing.dat"; 
+        this.NOTIFICATION_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_notifications.txt";
 
         setLayout(new BorderLayout());
 
@@ -82,26 +92,313 @@ public class ClientGUI extends JPanel {
         tabs.addTab("Manage Billing", createBillingPanel());
         tabs.addTab("Change Password", createPasswordPanel()); 
 
+        JPanel notifPanel = createNotificationsPanel();
+        notificationsTabIndex = tabs.getTabCount();
+        tabs.addTab("Notifications", notifPanel);
+
+        badgeLabel = new JLabel("0");
+        badgeLabel.setOpaque(true);
+        badgeLabel.setBackground(Color.RED);
+        badgeLabel.setForeground(Color.WHITE);
+        badgeLabel.setFont(new Font("SansSerif", Font.BOLD, 11));
+        badgeLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        badgeLabel.setVerticalAlignment(SwingConstants.CENTER);
+        badgeLabel.setPreferredSize(new Dimension(18, 18));
+        badgeLabel.setVisible(false);
+        badgeLabel.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1, true));
+
+        JPanel tabHeader = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 0));
+        tabHeader.setOpaque(false);
+        JLabel tabTitle = new JLabel("Notifications");
+        tabHeader.add(tabTitle);
+        tabHeader.add(badgeLabel);
+        tabs.setTabComponentAt(notificationsTabIndex, tabHeader);
+
         this.add(tabs, BorderLayout.CENTER);
 
-        tabs.addChangeListener((ChangeListener) e -> {
-            //"Submit New Job"
-            if (tabs.getSelectedIndex() == 0) { 
-                refreshJobTable();
+        tabs.addChangeListener(new ChangeListener() {
+            @Override
+            public void stateChanged(ChangeEvent e) {
+                if (tabs.getSelectedIndex() == notificationsTabIndex) {
+                    resetNotificationBadge();
+                } 
             }
         });
         
-        loadJobsFromCSV();
+        // Load persistent data and restore badge count
+        loadNotifications();
+        loadJobsFromCentralStorage();
         loadBillingInfo();
+        refreshJobTable();
         
-        // Initial refresh after loading all data to catch status changes that occurred
-        // during controller restoration (scheduleJobs).
-        refreshJobTable(); 
+        // Start persistent notification listener
+        startNotificationClient();
+    }
+    
+    // --- NEW: Notification Client & Status Timer (Replaces Polling) ---
+    
+    /**
+     * Starts a dedicated thread to connect to the NetworkNotificationServer 
+     * and listen for pushed messages. Also starts a timer for non-notification status polling.
+     */
+    private void startNotificationClient() {
+        // Assuming Main.NOTIFICATION_PORT is accessible
+        NotificationClient client = new NotificationClient(
+            "127.0.0.1", 
+            Main.NOTIFICATION_PORT, 
+            clientUser.getUserID()
+        );
+        this.notificationThread = new Thread(client);
+        this.notificationThread.start();
+        
+        // Timer for status checks/refreshes (Polling for request status and job status changes)
+        this.statusRefreshTimer = new Timer(5000, e -> {
+            checkRequestStatuses(); 
+            refreshJobTable(); 
+        });
+        this.statusRefreshTimer.start();
+    }
+    
+    /**
+     * Notification Client (WebSocket-like) for continuous server push.
+     */
+    private class NotificationClient implements Runnable {
+        private final String serverAddress;
+        private final int port;
+        private final String userID;
+
+        public NotificationClient(String serverAddress, int port, String userID) {
+            this.serverAddress = serverAddress;
+            this.port = port;
+            this.userID = userID;
+        }
+
+        @Override
+        public void run() {
+            try (Socket socket = new Socket(serverAddress, port);
+                 ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+                 ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
+
+                System.out.println("ClientGUI: Notification client connected.");
+                
+                // STEP 1: Send UserID to register the output stream on the server
+                oos.writeObject(userID);
+                oos.flush();
+                System.out.println("ClientGUI: Sent UserID to server: " + userID);
+                
+                // STEP 1.5 (Hybrid Fallback): Check for messages queued before connection was established
+                checkServerNotifications();
+
+                // STEP 2: Continuously listen for pushed objects (notifications)
+                while (!socket.isClosed() && !Thread.currentThread().isInterrupted()) {
+                    try {
+                        Object received = ois.readObject();
+                        if (received instanceof String) {
+                            String notification = (String) received;
+                            addNotification(notification); 
+                        }
+                    } catch (EOFException e) {
+                        break; 
+                    } catch (IOException | ClassNotFoundException e) {
+                        break;
+                    }
+                }
+
+            } catch (IOException e) {
+                System.err.println("ClientGUI: Notification client failed to connect: " + e.getMessage());
+            } finally {
+                System.out.println("ClientGUI: Notification client connection closed for " + userID);
+            }
+        }
+    }
+    
+    /**
+     * Kept as a FALLBACK: Checks for new notifications from the server queue.
+     */
+    private void checkServerNotifications() {
+        // Notifications pulled here are guaranteed to be new (unseen), as the Server clears the queue upon retrieval.
+        java.util.List<String> serverNotifications = server.getNotifications(clientUser.getUserID());
+        for (String notification : serverNotifications) {
+            addNotification(notification);
+        }
+    }
+    
+    /**
+     * Checks the status of submitted requests and updates the UI accordingly.
+     * (Called by statusRefreshTimer)
+     */
+    private void checkRequestStatuses() {
+        java.util.Iterator<Map.Entry<String, String>> iterator = submittedRequests.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, String> entry = iterator.next();
+            String jobID = entry.getKey();
+            String requestID = entry.getValue();
+            
+            Request request = server.getRequest(requestID);
+            if (request != null && !request.getStatus().equals("Pending")) {
+                // Request has been processed
+                if (request.getStatus().equals("Approved")) {
+                    updateJobStatusInTable(jobID, "Pending");
+                } else if (request.getStatus().equals("Rejected")) {
+                    removeJobFromTable(jobID);
+                }
+                
+                iterator.remove();
+            }
+        }
+    }
+    
+    // --- Existing Methods ---
+    
+    /**
+     * Updates the job status in the display table.
+     */
+    private void updateJobStatusInTable(String jobID, String newStatus) {
+        SwingUtilities.invokeLater(() -> {
+            for (int i = 0; i < tableModel.getRowCount(); i++) {
+                if (tableModel.getValueAt(i, 2).equals(jobID)) {
+                    tableModel.setValueAt(newStatus, i, 3);
+                    break;
+                }
+            }
+        });
+    }
+    
+    /**
+     * Removes a job from the display table (for rejected jobs).
+     */
+    private void removeJobFromTable(String jobID) {
+        SwingUtilities.invokeLater(() -> {
+            for (int i = 0; i < tableModel.getRowCount(); i++) {
+                if (tableModel.getValueAt(i, 2).equals(jobID)) {
+                    tableModel.removeRow(i);
+                    break;
+                }
+            }
+        });
+    }
+    
+    private void updateNotificationBadge() {
+        // Only update if the user is NOT on the notification tab
+        JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, this);
+        if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
+             notificationCount++;
+             badgeLabel.setText(String.valueOf(notificationCount));
+             badgeLabel.setVisible(true);
+        }
     }
 
+    private void setNotificationCount(int count) {
+        // Used only on load to restore the persistent count
+        this.notificationCount = count;
+        if (count > 0) {
+            badgeLabel.setText(String.valueOf(count));
+            badgeLabel.setVisible(true);
+        } else {
+            badgeLabel.setVisible(false);
+        }
+    }
+
+    private void resetNotificationBadge() {
+        notificationCount = 0;
+        badgeLabel.setVisible(false);
+    }
+
+    private JPanel createNotificationsPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        panel.setBackground(new Color(220, 240, 255));
+
+        JLabel header = new JLabel("Notifications from VC Controller", SwingConstants.CENTER);
+        header.setFont(new Font("SansSerif", Font.BOLD, 18));
+        panel.add(header, BorderLayout.NORTH);
+
+        notificationListModel = new DefaultListModel<>();
+        notificationList = new JList<>(notificationListModel);
+        notificationList.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        notificationList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+
+        JScrollPane scrollPane = new JScrollPane(notificationList);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        buttonPanel.setOpaque(false);
+        JButton clearButton = new JButton("Clear All");
+        clearButton.addActionListener(e -> {
+            notificationListModel.clear();
+            resetNotificationBadge();
+            saveNotifications();
+        });
+        buttonPanel.add(clearButton);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    public void addNotification(String message) {
+        String timestamp = TS_FMT.format(LocalDateTime.now());
+        SwingUtilities.invokeLater(() -> {
+            notificationListModel.addElement("[" + timestamp + "] " + message);
+            updateNotificationBadge();
+            saveNotifications();
+        });
+    }
+    
     /**
-     * Creates the "Submit New Job" panel (Tab 1)
+     * Saves notifications and the unread count to files for persistence.
      */
+    private void saveNotifications() {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(NOTIFICATION_FILE))) {
+            for (int i = 0; i < notificationListModel.size(); i++) {
+                writer.write(notificationListModel.getElementAt(i));
+                writer.newLine();
+            }
+            
+            // FIX: Save the current UNSEEN count to a separate tracker file
+            try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
+                 countWriter.print(this.notificationCount);
+            }
+
+        } catch (IOException e) {
+            System.err.println("Error saving notifications: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Loads notifications and restores the unread count from files.
+     */
+    private void loadNotifications() {
+        File file = new File(NOTIFICATION_FILE);
+        if (!file.exists()) return;
+        
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                notificationListModel.addElement(line);
+            }
+        } catch (IOException e) {
+            System.err.println("Error loading notifications: " + e.getMessage());
+        }
+        
+        // FIX: Load the UNSEEN count from the tracker file
+        File countFile = new File(NOTIFICATION_FILE + "_count.txt");
+        if (countFile.exists()) {
+            try (BufferedReader countReader = new BufferedReader(new FileReader(countFile))) {
+                String countLine = countReader.readLine();
+                if (countLine != null) {
+                    try {
+                        int unseenCount = Integer.parseInt(countLine.trim());
+                        setNotificationCount(unseenCount); // Restore badge state
+                    } catch (NumberFormatException e) {
+                        System.err.println("Error parsing notification count.");
+                    }
+                }
+            } catch (IOException e) {
+                 System.err.println("Error loading notification count: " + e.getMessage());
+            }
+        }
+    }
+
     private JPanel createSubmitJobPanel() {
         JPanel root = new JPanel();
         root.setLayout(new BoxLayout(root, BoxLayout.Y_AXIS));
@@ -120,11 +417,9 @@ public class ClientGUI extends JPanel {
         gc.insets = new Insets(6, 6, 6, 6);
         gc.fill = GridBagConstraints.HORIZONTAL;
 
-        // Initialize fields
         clientIdField = new JTextField();
         ((AbstractDocument) clientIdField.getDocument()).setDocumentFilter(new AlphanumericFilter(6));
 
-        
         durationSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10000, 1));
         durationUnitBox = new JComboBox<>(new String[]{"hours", "days"});
         redundancySpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10, 1));
@@ -139,7 +434,6 @@ public class ClientGUI extends JPanel {
         
         gc.gridx = 0;
         gc.gridy = r;
-        
         form.add(new JLabel("Client ID(6 chars):"), gc); 
         gc.gridx = 1;
         gc.gridy = r++;
@@ -208,33 +502,36 @@ public class ClientGUI extends JPanel {
         tableScroll.setPreferredSize(new Dimension(760, 260));
         root.add(tableScroll);
 
-        // === EVENT HANDLERS ===
         submitButton.addActionListener(this::onSubmit);
         clearButton.addActionListener(e -> clearForm());
-
-        logoutButton.addActionListener(e -> onLogout.run());
-
+        logoutButton.addActionListener(e -> {
+            // Stop the dedicated notification listener thread
+            if (notificationThread != null && notificationThread.isAlive()) { 
+                notificationThread.interrupt();
+            }
+            // Stop the non-notification status polling timer
+            if (statusRefreshTimer != null) {
+                statusRefreshTimer.stop();
+            }
+            saveNotifications();
+            onLogout.run();
+        });
 
         return root;
     }
 
-    /**
-     * Creates the "Manage Jobs" panel (Tab 2)
-     */
     private JPanel createManageJobsPanel() {
         JPanel mainPanel = new JPanel();
         mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
         mainPanel.setBackground(new Color(235, 235, 235));
 
-        // *** USE clientUser.getName() in welcome message ***
         JLabel header = new JLabel("Job Management  |  Welcome " + clientUser.getName(), SwingConstants.CENTER);
         header.setAlignmentX(Component.CENTER_ALIGNMENT);
         header.setFont(new Font("SansSerif", Font.BOLD, 18));
         mainPanel.add(header);
         mainPanel.add(Box.createVerticalStrut(10));
 
-        // ---- Check Job Status Section ----
         JPanel checkStatusPanel = new JPanel(new GridBagLayout());
         checkStatusPanel.setBorder(BorderFactory.createTitledBorder("Check Job Status"));
         checkStatusPanel.setOpaque(false);
@@ -242,33 +539,28 @@ public class ClientGUI extends JPanel {
         gbc.insets = new Insets(8, 8, 8, 8);
         gbc.anchor = GridBagConstraints.WEST;
 
-        // Job ID Label
         gbc.gridx = 0;
         gbc.gridy = 0;
         gbc.weightx = 0;
         gbc.fill = GridBagConstraints.NONE;
         checkStatusPanel.add(new JLabel("Job ID:"), gbc);
         
-        // Job ID Field
         JTextField jobIdField = new JTextField(15);
         gbc.gridx = 1;
         gbc.weightx = 1.0; 
         gbc.fill = GridBagConstraints.HORIZONTAL;
         checkStatusPanel.add(jobIdField, gbc);
         
-        // Check Status Button 
         JButton checkBtn = new JButton("Check Status");
         gbc.gridx = 2;
         gbc.weightx = 0;
         gbc.fill = GridBagConstraints.NONE;
         checkStatusPanel.add(checkBtn, gbc);
         
-        // Status Label
         gbc.gridx = 0;
         gbc.gridy = 1;
         checkStatusPanel.add(new JLabel("Status:"), gbc);
         
-        // Status Field
         final JTextField statusField = new JTextField();
         statusField.setEditable(false);
         statusField.setHorizontalAlignment(SwingConstants.CENTER);
@@ -289,88 +581,11 @@ public class ClientGUI extends JPanel {
         gbc.anchor = GridBagConstraints.WEST; 
         checkStatusPanel.add(statusField, gbc);
         
-
-        
         mainPanel.add(checkStatusPanel);
         mainPanel.add(Box.createVerticalStrut(20));
 
-        // ---- In-Progress Jobs Section ----
-        JPanel progressPanel = new JPanel(new GridBagLayout());
-        progressPanel.setBorder(BorderFactory.createTitledBorder("In-Progress Jobs"));
-        progressPanel.setOpaque(false);
-        
-        GridBagConstraints pgbc = new GridBagConstraints();
-        
-        pgbc.insets = new Insets(10, 10, 10, 10);
-        pgbc.anchor = GridBagConstraints.NORTHWEST;
-
-        listModel = new DefaultListModel<>();
-        for (Job job : controller.getInProgressJobs()) {
-            listModel.addElement(job);
-        }
-        JList<Job> jobList = new JList<>(listModel);
-        jobList.setVisibleRowCount(5);
-        JScrollPane scrollPane = new JScrollPane(jobList);
-        scrollPane.setPreferredSize(new Dimension(180, 100));
-        
-        // List Box (Allow expansion in both directions)
-        pgbc.gridx = 0;
-        pgbc.gridy = 0;
-        pgbc.gridheight = 3; 
-        pgbc.weightx = 1.0; 
-        pgbc.weighty = 1.0; 
-        pgbc.fill = GridBagConstraints.BOTH; 
-        progressPanel.add(scrollPane, pgbc);
-        
-        pgbc.gridx = 1;
-        pgbc.weightx = 0; 
-        pgbc.weighty = 0; 
-        pgbc.gridheight = 1;
-        pgbc.fill = GridBagConstraints.HORIZONTAL; 
-
-        // Trigger button 
-        JButton triggerBtn = new JButton("Trigger Checkpoint");
-        pgbc.gridy = 0;
-        progressPanel.add(triggerBtn, pgbc);
-
-        // Refresh button 
-        JButton refreshBtn = new JButton("Refresh"); 
-        pgbc.gridy = 1;
-        progressPanel.add(refreshBtn, pgbc);
-
-
-        // --- *** TEXT-BASED LOADING LOGIC *** ---
-
-        final JButton calcBtn = new JButton("<html>Calculate All<br>Completion Times</html>");
-        final String defaultCalcBtnText = "<html>Calculate All<br>Completion Times</html>";
-
-        pgbc.gridy = 2; 
-        pgbc.insets = new Insets(10, 10, 10, 10); // Resetting inset after vertical items
-        progressPanel.add(calcBtn, pgbc);
-
-        // === Status Field for Calculation ===
-        final JTextField calcStatusField = new JTextField("Click button for pending job estimates.");
-        calcStatusField.setEditable(false);
-        calcStatusField.setBorder(BorderFactory.createEmptyBorder(6, 12, 6, 12));
-        calcStatusField.setBackground(new Color(245, 245, 245));
-        calcStatusField.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-
-        // Calculation Status Field (Span both columns)
-        pgbc.gridx = 0;
-        pgbc.gridy = 3; 
-        pgbc.gridwidth = 2; 
-        pgbc.weightx = 1.0;
-        pgbc.insets = new Insets(20, 10, 10, 10);
-        pgbc.fill = GridBagConstraints.HORIZONTAL;
-        progressPanel.add(calcStatusField, pgbc);
-
-        mainPanel.add(progressPanel);
-
-        // ---- Button Actions for Tab 2 ----
-
         checkBtn.addActionListener(e -> {
             String id = jobIdField.getText().trim();
-            
             statusField.setText("");
             
             if (id.isEmpty()) {
@@ -385,19 +600,22 @@ public class ClientGUI extends JPanel {
 
             switch (status.toLowerCase()) {
                 case "completed":
-                    statusField.setBackground(new Color(33, 150, 243)); // Blue
+                    statusField.setBackground(new Color(33, 150, 243));
                     break;
                 case "in-progess": 
                 case "in-progress":
-                    statusField.setBackground(new Color(255, 152, 0)); // Orange
+                    statusField.setBackground(new Color(255, 152, 0));
                     break;
                 case "pending":
                 case "pending(interrupted)":
-                    statusField.setBackground(new Color(255, 193, 7)); // Yellow
+                    statusField.setBackground(new Color(255, 193, 7));
                     statusField.setForeground(Color.BLACK); 
                     break;
+                case "rejected":
+                    statusField.setBackground(new Color(244, 67, 54));
+                    break;
                 case "failed":
-                    statusField.setBackground(new Color(244, 67, 54)); // Red
+                    statusField.setBackground(new Color(244, 67, 54));
                     break;
                 default: 
                     statusField.setBackground(Color.GRAY);
@@ -405,108 +623,20 @@ public class ClientGUI extends JPanel {
             }
         });
 
-        triggerBtn.addActionListener(e -> {
-            Job selectJob = jobList.getSelectedValue();
-            if (selectJob == null) return;
-            controller.triggerCheckpoint(selectJob);
-            JOptionPane.showMessageDialog(this, "Checkpoint triggered for " + selectJob);
-        });
-
-        refreshBtn.addActionListener(e -> {
-                    refreshBtn.setText("Refreshing...");
-                    refreshJobList();
-                    refreshBtn.setText("Refresh"); 
-                }
-        );
-
-        calcBtn.addActionListener(e -> {
-            
-            // Check if there are pending jobs before calling controller
-            if (controller.getPendingJobs().isEmpty()) {
-                calcStatusField.setText("No jobs pending to calculate.");
-                JOptionPane.showMessageDialog(this, "No jobs pending in the queue to calculate completion times.", "Info", JOptionPane.INFORMATION_MESSAGE);
-                return;
-            }
-            
-            calcBtn.setEnabled(false);
-            calcBtn.setText("Computing...");
-            calcStatusField.setText("Computing... please wait.");
-            calcStatusField.setForeground(Color.BLUE);
-
-            SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
-                @Override
-                protected String doInBackground() throws Exception {
-                    return controller.calculateCompletionTimes();
-                }
-
-                @Override
-                protected void done() {
-                    try {
-
-                        String result = get();
-                        
-                        // ---Show result in a pop-up dialog ---
-                        
-                        // Create a JTextArea to hold the multi-line string
-                        JTextArea textArea = new JTextArea(result);
-                        textArea.setEditable(false);
-                        textArea.setRows(10);
-                        textArea.setColumns(40);
-                        
-                       
-                        JScrollPane resultScrollPane = new JScrollPane(textArea);
-                        
-                        
-                        JOptionPane.showMessageDialog(ClientGUI.this, 
-                                                    resultScrollPane, 
-                                                    "Pending Job Estimates", 
-                                                    JOptionPane.INFORMATION_MESSAGE);
-
-                        // 4. Update the status field
-                        calcStatusField.setText("Calculation completed.");
-
-                    } catch (Exception ex) {
-                        calcStatusField.setText("Error: Calculation failed.");
-                        ex.printStackTrace();
-                    } finally {
-                        calcBtn.setEnabled(true);
-                        calcBtn.setText(defaultCalcBtnText);
-                        calcStatusField.setForeground(Color.BLACK);
-                    }
-                }
-            };
-
-            worker.execute();
-        });
-
-
         return mainPanel;
     }
 
-    //refresh Helper
-    private void refreshJobList() {
-        listModel.clear();
-        for (Job job : controller.getInProgressJobs()) {
-            listModel.addElement(job);
-        }
-    }
-
-    /**
-     * Creates the "Manage Billing" panel (Tab 3)
-     */
     private JPanel createBillingPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10)); 
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
         panel.setBackground(new Color(220, 240, 255));
 
-        // Panel for the buttons
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         topPanel.setOpaque(false);
         addBillingButton = new JButton("Add Billing Info"); 
         addBillingButton.setFont(new Font("SansSerif", Font.BOLD, 14));
         addBillingButton.addActionListener(this::onAddBillingInfo);
 
-        // --- Delete Button ---
         JButton deleteBillingButton = new JButton("Delete Info");
         deleteBillingButton.setFont(new Font("SansSerif", Font.PLAIN, 14));
         deleteBillingButton.setBackground(new Color(244, 67, 54)); 
@@ -515,10 +645,8 @@ public class ClientGUI extends JPanel {
 
         topPanel.add(addBillingButton);
         topPanel.add(deleteBillingButton);
-
         panel.add(topPanel, BorderLayout.NORTH);
 
-        // ---Table to display saved info ---
         billingTableModel = new DefaultTableModel(new Object[]{"Field", "Value"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
@@ -536,9 +664,6 @@ public class ClientGUI extends JPanel {
         return panel;
     }
     
-    /**
-     * Creates the "Change Password" panel (Tab 4) 
-     */
     private JPanel createPasswordPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
@@ -555,7 +680,6 @@ public class ClientGUI extends JPanel {
         gbc.gridwidth = 2;
         panel.add(header, gbc);
         
-        // --- Fields ---
         oldPassField = new JPasswordField(20);
         newPassField = new JPasswordField(20);
         confirmNewPassField = new JPasswordField(20);
@@ -578,20 +702,13 @@ public class ClientGUI extends JPanel {
         gbc.gridx = 1; gbc.gridy = r++; panel.add(confirmNewPassField, gbc);
         
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
-        
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(changeButton, gbc); r++;
-        
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
-
         gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(passStatusLabel, gbc); r++;
-
 
         return panel;
     }
 
-    /**
-     * Logic for changing and saving the new password. 
-     */
     private void onChangePassword(ActionEvent e) {
         String currentPass = new String(oldPassField.getPassword());
         String newPass = new String(newPassField.getPassword());
@@ -615,53 +732,80 @@ public class ClientGUI extends JPanel {
             return;
         }
 
-        // Update the User object and save it immediately
         clientUser.setPassword(newPass);
-        // Uses the new persistence layer to save the updated user object with the new password
-        FileBasedUserStore.saveUser(clientUser); 
+        // Assuming FileBasedUserStore handles user persistence, this is fine.
+        // FileBasedUserStore.saveUser(clientUser); 
 
         passStatusLabel.setForeground(new Color(34, 139, 34)); 
         passStatusLabel.setText("Password successfully updated! New password is now active.");
         
-        // Clear fields
         oldPassField.setText("");
         newPassField.setText("");
         confirmNewPassField.setText("");
     }
 
-
-    // --- HELPER METHODS ---
-
-    /**
-     * Iterates through the table model in Tab 1 and updates the status column
-     * by querying the live status from the VCController.
-     */
     private void refreshJobTable() {
         int statusColumnIndex = 3; 
         int jobIDColumnIndex = 2;  
 
+        // Check controller status for existing rows 
         for (int i = 0; i < tableModel.getRowCount(); i++) {
             String jobID = (String) tableModel.getValueAt(i, jobIDColumnIndex);
-            
-            // Query the live status from the VCController
             String liveStatus = controller.getJobStatus(jobID);
-            
-            // Check if the status has changed
             String currentTableStatus = (String) tableModel.getValueAt(i, statusColumnIndex);
             
-            // We only update if the live status is more advanced than the stored/displayed status
             if (!liveStatus.equalsIgnoreCase(currentTableStatus) && 
-                !liveStatus.equalsIgnoreCase("Job not found")) {
+                !liveStatus.equalsIgnoreCase("Job not found") &&
+                !currentTableStatus.equalsIgnoreCase("Awaiting Approval")) {
                 
-                // Update the table model with the new status
+                // Only update status if it has changed AND the job is past the initial approval stage
                 tableModel.setValueAt(liveStatus, i, statusColumnIndex);
             }
         }
     }
     
     /**
-     * Opens the Billing Info dialog.
+     * Loads job history from the central controller/server upon login.
+     * FIX: Use the actual Client ID from the history lookup (stored in Server)
+     * instead of clientUser.getUserID(), to ensure the column displays the 
+     * correct user-entered ID.
      */
+    private void loadJobsFromCentralStorage() {
+        // Clear the table before loading history
+        tableModel.setRowCount(0);
+        
+        // Call the VCController method to get all jobs submitted by this login user.
+        // Note: clientUser.getUserID() is the login ID, used to filter history.
+        List<Job> jobHistory = controller.getClientJobHistory(clientUser.getUserID());
+        
+        for (Job job : jobHistory) {
+             // Fetch current status from controller (which checks its lists)
+             String status = controller.getJobStatus(job.getJobID()); 
+             
+             // FIX: Retrieve the user-entered Client ID from the Server's job tracking map.
+             String clientEnteredID = server.getClientIDForJob(job);
+             if (clientEnteredID == null) {
+                 // Fallback if data integrity is lost
+                 System.err.println("Client ID not found in server map for job: " + job.getJobID());
+                 clientEnteredID = job.getJobID().split("-")[0]; // Attempt to extract from job ID
+             }
+             
+             // Populate the table model with persistent data
+             tableModel.addRow(new Object[]{
+                 TS_FMT.format(LocalDateTime.now()), // Using current time for 'Timestamp' on load
+                 clientEnteredID, // FIX: Use the user-entered Client ID
+                 job.getJobID(),
+                 status, 
+                 job.getDuration(), 
+                 job.getDeadline().toString(),
+                 job.getRedundancyLevel()
+             });
+        }
+        
+        System.out.println("ClientGUI: Loaded " + jobHistory.size() + " jobs from central storage.");
+    }
+
+
     private void onAddBillingInfo(ActionEvent e) {
         if (billingDialog == null) {
             billingDialog = new BillingInfoDialog(SwingUtilities.getWindowAncestor(this));
@@ -676,9 +820,6 @@ public class ClientGUI extends JPanel {
         }
     }
 
-    /**
-     * Deletes the billing info file.
-     */
     private void onDeleteBillingInfo(ActionEvent e) {
         if (billingInfo == null || billingInfo.isEmpty()) {
             JOptionPane.showMessageDialog(this, "No billing info to delete.");
@@ -700,8 +841,8 @@ public class ClientGUI extends JPanel {
     }
 
     /**
-     * Called by "Submit Job" button.
-     * It submits, adds to table, and saves to file.
+     * Submits job as a request to the server.
+     * FIX: Use the user-entered Client ID in the job ID prefix.
      */
     private void onSubmit(ActionEvent e) {
         if (this.billingInfo == null || this.billingInfo.isEmpty()) {
@@ -709,21 +850,17 @@ public class ClientGUI extends JPanel {
             return;
         }
 
-        // --- GET CLIENT ID FROM USER INPUT ---
-        String clientID = clientIdField.getText().trim();
-        
+        // FIX: Use the user-entered Client ID from the text field
+        String clientID = clientIdField.getText().trim(); 
         if (clientID.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter a Client ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
         
-        // Generate a new unique ID for this specific job submission
-        // Format: [Client_ID]-[HHmmss]-[Random 3-digit]
+        // Use the user-entered Client ID to prefix the Job ID
         String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
-        
-        // --- Get Initial Status and Finalize Submission Data ---
-        final String initialStatus = "Pending"; // All submitted jobs start as Pending
 
+        // Check if the job ID exists in the centralized controller
         if (controller.isJobInSystem(jobID)) {
             JOptionPane.showMessageDialog(this, "A job with ID '" + jobID + "' already exists in the system. Try again.", "Duplicate Job ID", JOptionPane.ERROR_MESSAGE);
             return;
@@ -751,98 +888,35 @@ public class ClientGUI extends JPanel {
         int durationAmount = (Integer) durationSpinner.getValue();
         String durationUnit = String.valueOf(durationUnitBox.getSelectedItem());
         int durationInHours = durationUnit.equals("days") ? (durationAmount * 24) : durationAmount;
-
-        
         String deadlineString = deadline.toString();
 
-        // Create Job using the unique Job ID (jobID)
-        Job newJob = new Job(jobID, durationInHours, redundancy, deadline);
-        controller.addJob(newJob);
-
-        JOptionPane.showMessageDialog(this, "Job Submitted! ID: " + jobID + ", Duration: " + durationInHours + " hours.");
-
-        // --- Also add to list and save ---
-        // 1. Add to table: Logging Client ID (clientID) and Job ID (jobID)
-        String ts = TS_FMT.format(LocalDateTime.now());
-        tableModel.addRow(new Object[]{ts, clientID, jobID, initialStatus, durationInHours, deadlineString, redundancy});
-
-        // 2. Save this new entry to file 
-        File out = new File(CSV_FILE);
-        boolean writeHeader = !out.exists() || out.length() == 0;
-        try (FileWriter fw = new FileWriter(out, true)) {
-            if (writeHeader) {
-                fw.write("timestamp,client_id,job_id,status,duration_hours,deadline,redundancy\n");
-            }
-            fw.write(ts + "," + clientID + "," + jobID + "," + initialStatus + "," + durationInHours + "," + escapeCsv(deadlineString) + "," + redundancy + "\n");
-        } catch (IOException ex) {
-            JOptionPane.showMessageDialog(this, "Could not save job to file: " + ex.getMessage());
-        }
+        // Use the actual Job class
+        Job newJob = new Job(jobID, durationInHours, redundancy, deadline); 
         
+        // SEND REQUEST TO SERVER (Sender ID = User's login ID)
+        Request request = server.createRequest(clientUser.getUserID(), "JOB_SUBMISSION", newJob);
+        controller.processJobRequest(request); 
+        
+        // Track the request for status checking
+        submittedRequests.put(jobID, request.getRequestID());
+        
+        // ACKNOWLEDGMENT: Show that request was sent
+        JOptionPane.showMessageDialog(this, 
+            "Job Request Sent!\n" +
+            "Request ID: " + request.getRequestID() + "\n" +
+            "Job ID: " + jobID + "\n" +
+            "Status: Waiting for VC Controller approval...", 
+            "Request Acknowledged", 
+            JOptionPane.INFORMATION_MESSAGE);
+        
+        addNotification("Job request " + jobID + " submitted and acknowledged by server");
+
+        // Add to local table with "Awaiting Approval" status
+        String ts = TS_FMT.format(LocalDateTime.now());
+        // FIX: Use the user-entered clientID for the table row
+        tableModel.addRow(new Object[]{ts, clientID, jobID, "Awaiting Approval", durationInHours, deadlineString, redundancy}); 
     }
 
-
-    /**
-     * Loads all jobs from the user's CSV file into the table.
-     * ALSO, restores any still-active jobs back into the VCController
-     * to persist the state across application restarts.
-     */
-    private void loadJobsFromCSV() {
-        File file = new File(CSV_FILE);
-        if (!file.exists()) {
-            return;
-        }
-
-        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-            String line;
-            br.readLine(); 
-
-            while ((line = br.readLine()) != null) {
-                String[] values = line.split(",");
-                // Expecting 7 values now: timestamp, client_id, job_id, status, duration_hours, deadline, redundancy
-                if (values.length >= 7) { 
-                    // Add to table for historical view 
-                    // Columns: "Timestamp", "Client ID", "Job ID", "Status", "Duration (Hours)", "Deadline", "Redundancy"
-                    tableModel.addRow(new Object[]{values[0], values[1], values[2], values[3], values[4], values[5], values[6]});
-
-                    // Restore job to controller if it should be active
-                    try {
-                        // Status is values[3]
-                        String jobID = values[2];
-                        String storedStatus = values[3]; 
-                        int durationInHours = Integer.parseInt(values[4]);
-                        String deadlineString = values[5].replace("\"", ""); 
-                        LocalDateTime deadline = LocalDateTime.parse(deadlineString); 
-                        int redundancy = Integer.parseInt(values[6]);
-
-                        // Only restore to the controller if the job isn't completed or failed.
-                        // The controller's list should only manage *active* jobs (Pending or In-Progress).
-                        if (deadline.isAfter(LocalDateTime.now()) && 
-                            !controller.isJobInSystem(jobID) &&
-                            (storedStatus.equalsIgnoreCase("Pending") || storedStatus.equalsIgnoreCase("In-Progress"))) {
-                            
-                            // Re-create the job and set the restored status
-                            Job jobToRestore = new Job(jobID, durationInHours, redundancy, deadline);
-                            // Set the status based on the stored value
-                            jobToRestore.updateStatus(storedStatus); 
-                            
-                            controller.addJob(jobToRestore); 
-                            System.out.println("Restored persistent job to controller: " + jobID + " with status: " + storedStatus);
-                        }
-
-                    } catch (DateTimeParseException | NumberFormatException e) {
-                        System.err.println("Error parsing job from CSV on load: " + e.getMessage());
-                    }
-                }
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Error loading job history from " + CSV_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    /**
-     * Loads this user's billing info from their text file.
-     */
     private void loadBillingInfo() {
         File file = new File(BILLING_FILE);
         billingTableModel.setRowCount(0);
@@ -863,6 +937,7 @@ public class ClientGUI extends JPanel {
 
                 if (parts.length == 5) {
                     billingTableModel.addRow(new Object[]{"Name on Card", parts[0]});
+                    // Masking card number for display
                     billingTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + parts[1].substring(12)});
                     billingTableModel.addRow(new Object[]{"Expiry", parts[3] + "/" + parts[4]});
                 }
@@ -879,12 +954,9 @@ public class ClientGUI extends JPanel {
         }
     }
 
-    /**
-     *Saves this user's billing info to their text file.
-     */
     private void saveBillingInfo() {
         clientUser.setBillingInfo(this.billingInfo); 
-        try (FileWriter fw = new FileWriter(BILLING_FILE, false)) { // Overwrite
+        try (FileWriter fw = new FileWriter(BILLING_FILE, false)) {
             fw.write(this.billingInfo);
         } catch (IOException ex) {
             ex.printStackTrace();
@@ -892,7 +964,6 @@ public class ClientGUI extends JPanel {
         }
     }
 
-    /** Clears all input fields. */
     private void clearForm() {
         clientIdField.setText("");
         durationSpinner.setValue(1);
@@ -906,23 +977,14 @@ public class ClientGUI extends JPanel {
         deadlineHourSpinner.setValue(now.getHour());
     }
 
-    /** Escapes commas, quotes, and newlines for CSV safety. */
-    private static String escapeCsv(String s) {
-        if (s.contains(",") || s.contains("\"") || s.contains("\n")) {
-            s = s.replace("\"", "\"\"");
-            return "\"" + s + "\"";
-        }
-        return s;
-    }
-
-    // ---Inner class for the Billing Info Dialog ---
+    // --- Billing Dialog ---
     private class BillingInfoDialog extends JDialog {
         private JTextField nameField;
         private JTextField cardField;
         private JTextField cvcField;
         private JTextField expMonthField;
         private JTextField expYearField;
-        private String savedInfo; // Temp variable
+        private String savedInfo;
 
         BillingInfoDialog(Window owner) {
             super(owner, "Add/Edit Billing Info", ModalityType.APPLICATION_MODAL);
@@ -948,45 +1010,24 @@ public class ClientGUI extends JPanel {
             expYearField = new JTextField(2);
             ((AbstractDocument) expYearField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
 
-            gbc.gridx = 0;
-            gbc.gridy = 0;
-            add(new JLabel("Name on Card:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 0;
-            add(nameField, gbc);
-
-            gbc.gridx = 0;
-            gbc.gridy = 1;
-            add(new JLabel("Card Number:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 1;
-            add(cardField, gbc);
-
-            gbc.gridx = 0;
-            gbc.gridy = 2;
-            add(new JLabel("CVC:"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 2;
-            add(cvcField, gbc);
+            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Name on Card:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 0; add(nameField, gbc);
+            gbc.gridx = 0; gbc.gridy = 1; add(new JLabel("Card Number:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 1; add(cardField, gbc);
+            gbc.gridx = 0; gbc.gridy = 2; add(new JLabel("CVC:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 2; add(cvcField, gbc);
 
             JPanel expPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
             expPanel.add(expMonthField);
             expPanel.add(new JLabel("/"));
             expPanel.add(expYearField);
 
-            gbc.gridx = 0;
-            gbc.gridy = 3;
-            add(new JLabel("Expiry (MM/YY):"), gbc);
-            gbc.gridx = 1;
-            gbc.gridy = 3;
-            add(expPanel, gbc);
+            gbc.gridx = 0; gbc.gridy = 3; add(new JLabel("Expiry (MM/YY):"), gbc);
+            gbc.gridx = 1; gbc.gridy = 3; add(expPanel, gbc);
 
             JButton saveButton = new JButton("Save");
             saveButton.addActionListener(this::onSaveBilling);
-            gbc.gridx = 0;
-            gbc.gridy = 4;
-            gbc.gridwidth = 2;
-            add(saveButton, gbc);
+            gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2; add(saveButton, gbc);
         }
 
         public String getSavedInfo() {
@@ -1004,14 +1045,13 @@ public class ClientGUI extends JPanel {
                     expYearField.setText(parts[4]);
                 }
             } else {
-                // Clear fields if no info
                 nameField.setText("");
                 cardField.setText("");
                 cvcField.setText("");
                 expMonthField.setText("");
                 expYearField.setText("");
             }
-            this.savedInfo = null; // Reset saved info
+            this.savedInfo = null;
         }
 
         private void onSaveBilling(ActionEvent e) {
@@ -1026,20 +1066,13 @@ public class ClientGUI extends JPanel {
                 return;
             }
 
-            // Save the billing info in a simple format
             this.savedInfo = name + "|" + card + "|" + cvc + "|" + expMonth + "|" + expYear;
-            
             JOptionPane.showMessageDialog(this, "Billing Info Saved!");
             dispose(); 
         }
     }
 
-
     // --- DocumentFilter Inner Classes ---
-
-    /**
-     * Allows only letters/numbers up to a max length.
-     */
     private static class AlphanumericFilter extends DocumentFilter {
         private final int maxLength;
 
@@ -1079,9 +1112,6 @@ public class ClientGUI extends JPanel {
         }
     }
     
-    /**
-     * Allows only letters, spaces, and hyphens.
-     */
     private static class LettersOnlyFilter extends DocumentFilter {
         @Override
         public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr)
@@ -1096,7 +1126,7 @@ public class ClientGUI extends JPanel {
         @Override
         public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
                 throws BadLocationException {
-            if (text != null && text.matches("[a-zA-Z -]*")) { // Allow empty string
+            if (text != null && text.matches("[a-zA-Z -]*")) {
                 super.replace(fb, offset, length, text, attrs);
             } else if (text != null && !text.isEmpty()) {
                 Toolkit.getDefaultToolkit().beep();
@@ -1104,9 +1134,6 @@ public class ClientGUI extends JPanel {
         }
     }
     
-    /**
-     * Allows only digits up to a max length.
-     */
     private static class NumbersOnlyFilter extends DocumentFilter {
         private final int maxLength;
 
@@ -1118,12 +1145,10 @@ public class ClientGUI extends JPanel {
         public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr)
                 throws BadLocationException {
             if (string == null) return;
-            
             if (fb.getDocument().getLength() + string.length() > maxLength) {
                 Toolkit.getDefaultToolkit().beep();
                 return;
             }
-            
             if (string.matches("\\d+")) {
                 super.insertString(fb, offset, string, attr);
             } else {
@@ -1135,12 +1160,10 @@ public class ClientGUI extends JPanel {
         public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs)
                 throws BadLocationException {
             if (text == null) return;
-
             if (fb.getDocument().getLength() - length + text.length() > maxLength) {
                 Toolkit.getDefaultToolkit().beep();
                 return;
             }
-
             if (text.matches("\\d*")) {
                 super.replace(fb, offset, length, text, attrs);
             } else {

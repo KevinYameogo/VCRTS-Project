@@ -74,7 +74,7 @@ public class LandingPage extends JFrame {
         infoLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
         mainPanel.add(infoLabel);
 
-        String[] roles = {"Select role", "Client", "Owner"};
+        String[] roles = {"Select role", "Client", "Owner", "VC Controller"};
         roleComboBox = new JComboBox<>(roles);
         roleComboBox.setAlignmentX(Component.CENTER_ALIGNMENT);
         mainPanel.add(roleComboBox);
@@ -157,6 +157,25 @@ public class LandingPage extends JFrame {
                 infoLabel.setText("Owner view: Welcome! Login to continue.");
                 loginPanel.setVisible(true);
                 tempPassDisplayArea.setText("New Owner? Enter a username and click 'Generate Pass'.");
+            } else if (index == 3) { // VC Controller
+                infoLabel.setText("Opening VC Controller Dashboard...");
+                loginPanel.setVisible(false);
+                // Directly open VC Controller GUI
+                SwingUtilities.invokeLater(() -> {
+                    Runnable onBack = () -> {
+                        cardLayout.show(mainContentPanel, "LOGIN");
+                        roleComboBox.setSelectedIndex(0);
+                        infoLabel.setText("Choose your role to continue.");
+                    };
+                    // FIX: Pass the server instance from controller
+                    VCControllerGUI vcControllerPanel = new VCControllerGUI(
+                        this.controller, 
+                        this.controller.getServer(),  // Changed from null to actual server
+                        onBack
+                    );
+                    mainContentPanel.add(vcControllerPanel, "VC_CONTROLLER_VIEW");
+                    cardLayout.show(mainContentPanel, "VC_CONTROLLER_VIEW");
+                });
             } else { // Select role
                 infoLabel.setText("Choose your role to continue.");
                 loginPanel.setVisible(false);

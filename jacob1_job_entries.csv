@@ -1,4 +1,0 @@
-timestamp,client_id,job_id,status,duration_hours,deadline,redundancy
-2025-11-05 14:16:04,Mga9/6,Mga9/6-141603-939,Pending,6,2025-11-05T15:00,5
-2025-11-05 14:21:55,Mga9/6,Mga9/6-142154-354,Pending,12,2026-12-05T15:00,1
-2025-11-05 14:22:23,Mga9/6,Mga9/6-142220-137,Pending,48,2026-12-08T14:00,2

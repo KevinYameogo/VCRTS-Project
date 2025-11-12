@@ -1,13 +1,13 @@
 import java.time.LocalDateTime;
 import java.io.Serializable; 
 
-
 public class Vehicle implements Serializable {
     private static final long serialVersionUID = 1L; 
     
-    private final String vehicleID;
+    private final String vehicleID;         // SAME as licensePlate
     private final String make;
     private final String model;
+    private final int year; 
     private String status;       
     private final LocalDateTime departureSchedule;
     private String cpuStatus;
@@ -20,9 +20,10 @@ public class Vehicle implements Serializable {
 
     //Constructor
     public Vehicle(String vehicleID, String make, String model, int year, String licensePlate, String state, LocalDateTime departureSchedule) {
-        this.vehicleID = licensePlate; 
+        this.vehicleID = licensePlate;  // KEEPING VEHICLE ID = LICENSE PLATE AS YOU REQUESTED
         this.make = make;
         this.model = model;
+        this.year = year;
         this.licensePlate = licensePlate; 
         this.state = state;
         this.departureSchedule = departureSchedule;
@@ -32,8 +33,6 @@ public class Vehicle implements Serializable {
         this.currentJobID = null; 
     }
 
-
-    // Accepts the job ID it is assigned to.
     public void startExecution(String jobID) {
         this.currentJobID = jobID; 
         this.status = "Active";
@@ -42,14 +41,12 @@ public class Vehicle implements Serializable {
         System.out.println("Vehicle " + getSignature() + " started execution for Job " + this.currentJobID + ".");
     }
 
-   
     public Checkpoint createCheckpoint() {
         if (currentJobID == null) {
             System.err.println("Error: Vehicle " + getSignature() + " tried to create a checkpoint without an assigned job.");
             return null; 
         }
         
-        //Generate some dummy state data.
         byte[] mockStateData = ("Vehicle running. Status: " + this.status + " for Job " + this.currentJobID).getBytes();
         String chkID = java.util.UUID.randomUUID().toString();
         
@@ -79,9 +76,7 @@ public class Vehicle implements Serializable {
         this.memoryStatus = "Free";
         this.currentJobID = null; 
     }
-
   
-    
     public String getSignature() {
         return this.licensePlate + this.state;
     }
@@ -89,8 +84,27 @@ public class Vehicle implements Serializable {
     public String getVehicleID() {
         return licensePlate; 
     }
+
+    public String getLicensePlate() {
+        return licensePlate;
+    }
+
+    public String getMake() { 
+        return make; 
+    }
+
+    public String getModel() { 
+        return model; 
+    }
     
-    public String getStatus() {
-        return status;
+    public String getLicenseState(){
+        return state;
+    }
+
+    public LocalDateTime getDepartureSchedule() {
+        return departureSchedule;
+    }
+    public int getYear() {    
+        return year;
     }
 }

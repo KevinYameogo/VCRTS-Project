@@ -75,4 +75,8 @@ public class Job implements Serializable {
     public int hashCode() {
         return jobID.hashCode();
     }
+    //
+    public LocalDateTime getDeadline(){
+        return deadline;
+    }
 }

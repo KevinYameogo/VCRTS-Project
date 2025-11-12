@@ -1,2 +1,0 @@
-timestamp,client_id,job_id,status,duration_hours,deadline,redundancy
-2025-11-06 01:41:23,23222,23222-014122-950,Pending,1,2025-11-06T02:00,1

@@ -52,7 +52,7 @@ public class Job implements Serializable {
     }
     
     
-    // Used by VCController.calculateCompletionTimes()
+   
     public int getDuration() { 
         return durationInHours; 
     } 
@@ -75,7 +75,7 @@ public class Job implements Serializable {
     public int hashCode() {
         return jobID.hashCode();
     }
-    //
+    
     public LocalDateTime getDeadline(){
         return deadline;
     }

@@ -6,16 +6,21 @@ import java.util.stream.Stream;
 import java.util.Map;   
 import java.util.HashMap; 
 import java.io.*; 
+import java.util.Objects; 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * VCController with client-server request processing.
  * Thread-safe operations for handling concurrent requests.
- * FIXED: Ensures getClientJobHistory uses the login ID for filtering.
  */
 public class VCController implements Serializable {
   
   private static final long serialVersionUID = 2L; 
   private static final String STATE_FILE = "vccontroller_state.dat";
+  // Constants for CSV updates
+  private static final String JOBS_CSV = "jobs.csv"; 
+  private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
   private List<Vehicle> availableVehicles; 
   private List<Vehicle> activeVehicles;
@@ -27,11 +32,11 @@ public class VCController implements Serializable {
   private Map<Job, List<Vehicle>> jobVehicleMap; 
   private Map<Vehicle, Job> vehicleJobMap;
   
-  // GUI reference for notifications
+  // GUI reference for notifications(non-seriazable)
   private transient VCControllerGUI controllerGUI;
 
   public VCController(Server server){
-    this.systemServer = server;
+    this.systemServer = Objects.requireNonNull(server, "Server cannot be null.");
     
     if (!loadState()) {
       this.availableVehicles = new ArrayList<>();
@@ -45,6 +50,10 @@ public class VCController implements Serializable {
       System.out.println("VCController initialized fresh.");
     } else {
       System.out.println("VCController state successfully loaded.");
+      
+      // Ensure transient maps are re-created if necessary 
+      if (this.jobVehicleMap == null) this.jobVehicleMap = new HashMap<>();
+      if (this.vehicleJobMap == null) this.vehicleJobMap = new HashMap<>();
     }
     
     scheduleJobs();
@@ -97,7 +106,7 @@ public class VCController implements Serializable {
       }
   }
   
-  // ==================== REQUEST PROCESSING METHODS ====================
+  // REQUEST PROCESSING METHODS 
   
   /**
    * Processes a job submission request from a client.
@@ -131,6 +140,9 @@ public class VCController implements Serializable {
       // Add job to controller
       Job job = (Job) request.getData();
       addJob(job);
+
+      // Store the approved job in the server's persistent storage
+      systemServer.storeApprovedJob(job);
       
       if (controllerGUI != null) {
           controllerGUI.addNotification("Job " + job.getJobID() + " approved and added to queue");
@@ -189,6 +201,9 @@ public class VCController implements Serializable {
       
       Vehicle vehicle = (Vehicle) request.getData();
       recruitVehicle(vehicle);
+
+      // Store the vehicle in the server's persistent storage
+      systemServer.storeRegisteredVehicle(vehicle);
       
       if (controllerGUI != null) {
           controllerGUI.addNotification("Vehicle " + vehicle.getVehicleID() + " approved and recruited");
@@ -217,8 +232,7 @@ public class VCController implements Serializable {
       System.out.println("VC Controller: Rejected vehicle request " + requestID);
   }
   
-  // ==================== EXISTING METHODS (Enhanced) ====================
-  
+  //
   public synchronized void addJob(Job job){ 
     pendingJobs.add(job);
     System.out.println("Job " + job.getJobID() + " added to pending queue.");
@@ -226,6 +240,7 @@ public class VCController implements Serializable {
     scheduleJobs();
   }
 
+  //schedule job
   private synchronized void scheduleJobs(){
     if(pendingJobs.isEmpty()){
       return;
@@ -238,6 +253,9 @@ public class VCController implements Serializable {
       assignJob(jobToAssign); 
       inProgressJobs.add(jobToAssign);
       jobToAssign.updateStatus("In-Progress");
+      
+      updateJobCsvStatus(jobToAssign);
+      
       System.out.println("Job " + jobToAssign.getJobID() + " started.");
       saveState();
     }else{
@@ -246,6 +264,7 @@ public class VCController implements Serializable {
     }
   }
 
+  //assign job
   private synchronized void assignJob(Job job){
     int redundancyLevel = job.getRedundancyLevel();
     String jobID = job.getJobID(); 
@@ -262,8 +281,7 @@ public class VCController implements Serializable {
       assignedVehicles.add(vehicleToAssign);
       vehicleJobMap.put(vehicleToAssign, job);
       
-      // Assuming Vehicle.startExecution exists
-      // vehicleToAssign.startExecution(jobID); 
+      vehicleToAssign.startExecution(jobID); 
     }
     jobVehicleMap.put(job, assignedVehicles);
   }
@@ -271,8 +289,8 @@ public class VCController implements Serializable {
   public synchronized void handleCheckpoint(Checkpoint checkpoint){
     System.out.println("Checkpoint received for vehicle: " + checkpoint.getVehicleID() + " at "
      + checkpoint.getTimestamp());
-    // Assuming systemServer.storeCheckpoint exists
-    // systemServer.storeCheckpoint(checkpoint);
+    
+    systemServer.storeCheckpoint(checkpoint);
   }
 
   public synchronized void handleJobCompletion(Job job){
@@ -289,8 +307,8 @@ public class VCController implements Serializable {
     
     for(Vehicle vehicle : vehiclesToRelease){
         activeVehicles.remove(vehicle);
-        // Assuming Vehicle.markAvailable exists
-        // vehicle.markAvailable();
+        
+        vehicle.markAvailable();
         availableVehicles.add(vehicle);
         vehicleJobMap.remove(vehicle);
         
@@ -302,17 +320,18 @@ public class VCController implements Serializable {
     archivedJobs.add(job);
     job.updateStatus("Completed");
 
+    updateJobCsvStatus(job);
+
     System.out.println("Job " + job.getJobID() + " marked as 'Completed'.");
-    // Assuming systemServer.storeCompletedJob exists
-    // this.transferJobToServer(job); 
+    
+    this.transferJobToServer(job); 
     
     saveState(); 
     scheduleJobs();
   }
   
   private void transferJobToServer(Job job){
-    // Assuming systemServer.storeCompletedJob exists
-    // systemServer.storeCompletedJob(job);
+    systemServer.storeCompletedJob(job);
     System.out.println("Job " + job.getJobID() + " data transferred to server.");
   }
 
@@ -339,13 +358,14 @@ public class VCController implements Serializable {
         List<Vehicle> remainingVehicles = jobVehicleMap.get(interruptedJob);
         if (remainingVehicles == null || remainingVehicles.isEmpty()) {
             if (!availableVehicles.isEmpty()) {
-                // Assuming systemServer.getLatestCheckpoint exists
-                // Checkpoint latestCheckpoint = systemServer.getLatestCheckpoint(interruptedJob.getJobID()); 
                 
-                // if (latestCheckpoint != null) {
+                Checkpoint latestCheckpoint = systemServer.getLatestCheckpoint(interruptedJob.getJobID()); 
+                
+                if (latestCheckpoint != null) {
                     Vehicle replacementVehicle = availableVehicles.remove(0); 
                     activeVehicles.add(replacementVehicle);
-                    // restartComputation(latestCheckpoint, replacementVehicle);
+                    
+                    restartComputation(latestCheckpoint, replacementVehicle);
                     
                     List<Vehicle> updatedVehicles = new ArrayList<>();
                     updatedVehicles.add(replacementVehicle);
@@ -354,18 +374,24 @@ public class VCController implements Serializable {
                     
                     System.out.println("Job " + interruptedJob.getJobID() + " **recovered** on new vehicle: " 
                      + replacementVehicle.getVehicleID() + " from checkpoint.");
-                // } else {
-                //     inProgressJobs.remove(interruptedJob);
-                //     pendingJobs.add(interruptedJob);
-                //     interruptedJob.updateStatus("Pending(Interrupted)");
-                //     jobVehicleMap.remove(interruptedJob);
-                //     System.out.println("Job " + interruptedJob.getJobID() 
-                //      + " re-queued. No valid checkpoint found for recovery.");
-                // }
+                } else {
+                    inProgressJobs.remove(interruptedJob);
+                    pendingJobs.add(interruptedJob);
+                    interruptedJob.updateStatus("Pending(Interrupted)");
+
+                    updateJobCsvStatus(interruptedJob); 
+
+                    jobVehicleMap.remove(interruptedJob);
+                    System.out.println("Job " + interruptedJob.getJobID() 
+                     + " re-queued. No valid checkpoint found for recovery.");
+                }
             } else {
                 inProgressJobs.remove(interruptedJob);
                 pendingJobs.add(interruptedJob);
                 interruptedJob.updateStatus("Pending(Interrupted)");
+                
+                updateJobCsvStatus(interruptedJob); 
+                
                 jobVehicleMap.remove(interruptedJob);
                 System.out.println("Job " + interruptedJob.getJobID() + " re-queued. No vehicles available.");
             }
@@ -393,8 +419,7 @@ public class VCController implements Serializable {
     List<Vehicle> targetVehicles = jobVehicleMap.getOrDefault(job, new ArrayList<>());
 
     for(Vehicle vehicle: targetVehicles){
-        // Assuming Vehicle.createCheckpoint exists
-        // vehicle.createCheckpoint();
+        vehicle.createCheckpoint();
         vehiclesTriggered++;
     }
     System.out.println("Checkpoint signal sent to " + vehiclesTriggered + " vehicle(s).");
@@ -412,17 +437,40 @@ public class VCController implements Serializable {
     System.out.println("Instructing vehicle " + newVehicle.getVehicleID() 
      + " to restart computation from checkpoint " 
     + checkpoint.getCheckpointID());
-    // Assuming Vehicle.loadFromCheckpoint exists
-    // newVehicle.loadFromCheckpoint(checkpoint);
+    newVehicle.loadFromCheckpoint(checkpoint);
   }
 
-  public synchronized String getJobStatus(String jobID){
-    return Stream.of(pendingJobs, inProgressJobs, archivedJobs)
-        .flatMap(List::stream)
-        .filter(job -> job.getJobID().equals(jobID))
-        .map(Job::getStatus)
-        .findFirst()
-        .orElse("Job not found");
+
+    public synchronized String getJobStatus(String jobID){
+      // First check local controller lists
+      String localStatus = Stream.of(pendingJobs, inProgressJobs, archivedJobs)
+          .flatMap(List::stream)
+          .filter(job -> job.getJobID().equals(jobID))
+          .map(Job::getStatus)
+          .findFirst()
+          .orElse(null);
+      
+      if (localStatus != null) {
+          return localStatus; 
+      }
+      
+      // If not found locally, check server's approved jobs list
+      systemServer.reloadState(); // Get latest server state
+      List<Job> approvedJobs = systemServer.getAllApprovedJobs();
+      
+      for (Job job : approvedJobs) {
+          if (job.getJobID().equals(jobID)) {
+              return job.getStatus();
+          }
+      }
+      
+      // Also check completed jobs in server's storage archive
+      Job completedJob = systemServer.retrieveJob(jobID);
+      if (completedJob != null) {
+          return completedJob.getStatus();
+      }
+      
+      return "Job not found";
   }
 
   public String calculateCompletionTimes(){
@@ -450,34 +498,27 @@ public class VCController implements Serializable {
   public synchronized boolean isVehicleInSystem(String license, String state) {
     String signature = license + state;
     boolean inAvailable = availableVehicles.stream()
-            // Assuming Vehicle.getSignature exists
             .anyMatch(vehicle -> vehicle.getSignature().equals(signature));
     if (inAvailable) return true;
     return activeVehicles.stream()
-            // Assuming Vehicle.getSignature exists
             .anyMatch(vehicle -> vehicle.getSignature().equals(signature));
   }
   
   /**
-   * FIX: Returns a list of all registered vehicles associated with the given owner ID.
+   * Returns a list of all registered vehicles associated with the given owner ID.
    * This is used by OwnerGUI to display persistent vehicle registration history.
-   *
    * @param ownerID The ID of the owner whose vehicle history is requested.
    * @return List<Vehicle> A list of vehicles registered by the owner.
    */
   public synchronized List<Vehicle> getOwnerVehicleHistory(String ownerID) {
-      // Vehicle registration records are tracked primarily by the availableVehicles
-      // and activeVehicles lists. We rely on the Server to link the Vehicle object
-      // back to its original owner ID (via the registration request).
-      
-      List<Vehicle> allVehicles = new ArrayList<>();
-      allVehicles.addAll(availableVehicles);
-      allVehicles.addAll(activeVehicles);
+      systemServer.reloadState();
+
+      // Get all registered vehicles from the server's persistent storage
+      List<Vehicle> allVehicles = systemServer.getAllRegisteredVehicles();
       
       List<Vehicle> ownerHistory = new ArrayList<>();
       
       for (Vehicle vehicle : allVehicles) {
-          // ASSUMPTION: systemServer.getOwnerIDForVehicle(vehicle) is implemented in Server.java
           String senderId = systemServer.getOwnerIDForVehicle(vehicle); 
           if (ownerID.equals(senderId)) {
               ownerHistory.add(vehicle);
@@ -493,21 +534,21 @@ public class VCController implements Serializable {
   }
   
   /**
-   * FIX: Returns a list of all jobs (Pending, In-Progress, Archived) associated 
+   * Returns a list of all jobs (Pending, In-Progress, Archived) associated 
    * with the given client ID (which is the login ID).
-   *
    * @param loginID The login ID of the client whose job history is requested.
    * @return List<Job> A list of jobs submitted by the client.
    */
   public synchronized List<Job> getClientJobHistory(String loginID) {
-      List<Job> allJobs = Stream.of(pendingJobs, inProgressJobs, archivedJobs)
-              .flatMap(List::stream)
-              .toList();
+      systemServer.reloadState();
+      // Get ALL jobs: approved jobs (pending/in-progress) + completed jobs
+      List<Job> allJobs = new ArrayList<>();
+      allJobs.addAll(systemServer.getAllApprovedJobs()); // Pending/In-Progress
+      allJobs.addAll(archivedJobs); // Completed (also in server's storageArchive)
 
       List<Job> clientHistory = new ArrayList<>();
 
       for (Job job : allJobs) {
-          // FIX: Use the new Server method to look up the original sender ID (login ID)
           String senderId = systemServer.getLoginIDForJob(job); 
           if (loginID.equals(senderId)) {
               clientHistory.add(job);
@@ -526,5 +567,100 @@ public class VCController implements Serializable {
   
   public Server getServer() {
     return systemServer;
+  }
+  
+  //  CSV UPDATE HELPER (Synchronized for Thread Safety)
+
+  /**
+   * Reads jobs.csv, updates line the status for a specific job
+   */
+  private synchronized void updateJobCsvStatus(Job job) {
+      File inputFile = new File(JOBS_CSV);
+      if (!inputFile.exists()) {
+          System.err.println("Warning: Cannot update CSV status. File does not exist: " + JOBS_CSV);
+          return;
+      }
+
+      File tempFile = new File(JOBS_CSV + ".tmp");
+      String line;
+      int jobIDIndex = -1;
+      int statusIndex = -1;
+      List<String> fileContent = new ArrayList<>();
+      
+      try (BufferedReader reader = new BufferedReader(new FileReader(inputFile));
+           PrintWriter writer = new PrintWriter(new FileWriter(tempFile))) {
+          
+          // 1. Read Header and determine indices
+          if ((line = reader.readLine()) != null) {
+              writer.println(line); // Write header immediately to temp file
+              String[] headers = line.split(",");
+              for (int i = 0; i < headers.length; i++) {
+                  String header = headers[i].trim().replace("\"", ""); // Clean header
+                  if (header.equalsIgnoreCase("job_id")) {
+                      jobIDIndex = i;
+                  } else if (header.equalsIgnoreCase("status")) {
+                      statusIndex = i;
+                  }
+              }
+              if (jobIDIndex == -1 || statusIndex == -1) {
+                  System.err.println("Error: jobs.csv header is missing 'job_id' or 'status'. Cannot update.");
+                  return;
+              }
+          } else {
+              return; // File is empty
+          }
+
+          // 2. Read remaining lines, find and update the target line
+          while ((line = reader.readLine()) != null) {
+              String[] parts = line.split(",");
+              
+              if (parts.length > jobIDIndex && parts[jobIDIndex].contains(job.getJobID())) {
+                  // Found the matching job line. Reconstruct the line with the new status.
+                  
+                  StringBuilder newLine = new StringBuilder();
+                  for (int i = 0; i < parts.length; i++) {
+                      String part = parts[i];
+                      if (i == statusIndex) {
+                          // Insert the new status
+                          newLine.append(escape(job.getStatus())); 
+                      } else {
+                          // Keep the original part
+                          newLine.append(part);
+                      }
+                      if (i < parts.length - 1) {
+                          newLine.append(",");
+                      }
+                  }
+                  writer.println(newLine.toString());
+              } else {
+                  writer.println(line); // Keep the original line
+              }
+          }
+      } catch (IOException e) {
+          System.err.println("Error updating jobs.csv: " + e.getMessage());
+          // In case of an error, ensures the temp file is cleaned up if partially written
+          tempFile.delete(); 
+          return;
+      }
+      
+      // 3. Atomically replace the original file
+      if (!inputFile.delete()) {
+          System.err.println("Error: Could not delete original jobs.csv.");
+          tempFile.delete();
+          return;
+      }
+      if (!tempFile.renameTo(inputFile)) {
+          System.err.println("Error: Could not rename temp file to jobs.csv.");
+      } else {
+          System.out.println("jobs.csv: status for " + job.getJobID() + " updated to " + job.getStatus());
+      }
+  }
+
+  private String escape(String s) {
+      if (s == null) return "";
+      // Simple logic check for the necessary escaping character
+      boolean need = s.contains(",") || s.contains("\"") || s.contains("\n");
+      String v = need ? "\"" + s.replace("\"", "\"\"") + "\"" : s;
+      return v;
   }
 }

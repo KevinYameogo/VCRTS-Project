@@ -14,13 +14,9 @@ import javax.swing.event.ChangeListener;
 import java.util.List;
 import java.util.ArrayList;
 import java.net.Socket;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 
 /**
- * OwnerGUI with client-server model implementation.
- * FIXED: Replaced notification polling with WebSocket client, fixed badge persistence/logic, 
- * and restored payment input filters.
+ * OwnerGUI with persistent notification 
  */
 public class OwnerGUI extends JPanel {
 
@@ -30,8 +26,12 @@ public class OwnerGUI extends JPanel {
     private final Server server;
 
     // Request tracking
-    private Map<String, String> submittedRequests; // vehicleSignature -> requestID
-    // private Timer notificationCheckTimer; // REMOVED POLLING TIMER
+    private Map<String, String> submittedRequests;
+    
+    // Notification components
+    private static NotificationClient backgroundNotificationClient; // STATIC for persistence
+    private static Thread notificationThread; // STATIC for persistence
+    private Timer statusRefreshTimer;
 
     private JTextField ownerIdField;
     private JSpinner departureMonthSpinner;
@@ -55,19 +55,14 @@ public class OwnerGUI extends JPanel {
     private JPasswordField confirmNewPassField;
     private JLabel passStatusLabel;
 
-    // Notifications
     private DefaultListModel<String> notificationListModel;
     private JList<String> notificationList;
     private JLabel badgeLabel;
-    private int notificationCount = 0; // Tracks unseen notifications (red badge count)
+    private int notificationCount = 0;
     private int notificationsTabIndex;
 
     private DefaultTableModel tableModel;
     private JTable table;
-    
-    // NEW: Persistent Client for Notifications
-    private Thread notificationThread;
-    private Timer statusRefreshTimer; // Timer for non-notification status checks
 
     private final String PAYMENT_FILE;
     private final String NOTIFICATION_FILE;
@@ -90,7 +85,6 @@ public class OwnerGUI extends JPanel {
         this.PAYMENT_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_payment.dat";
         this.NOTIFICATION_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_notifications.txt";
 
-
         this.setLayout(new BorderLayout());
 
         JTabbedPane tabs = new JTabbedPane();
@@ -98,12 +92,10 @@ public class OwnerGUI extends JPanel {
         tabs.addTab("Manage Payment", createPaymentPanel());
         tabs.addTab("Change Password", createPasswordPanel());
         
-        // Add Notifications tab
         JPanel notifPanel = createNotificationsPanel();
         notificationsTabIndex = tabs.getTabCount();
         tabs.addTab("Notifications", notifPanel);
 
-        // Badge for notifications
         badgeLabel = new JLabel("0");
         badgeLabel.setOpaque(true);
         badgeLabel.setBackground(Color.RED);
@@ -127,38 +119,73 @@ public class OwnerGUI extends JPanel {
             public void stateChanged(ChangeEvent e) {
                 if (tabs.getSelectedIndex() == notificationsTabIndex) {
                     resetNotificationBadge();
-                } 
+                } else if (tabs.getSelectedIndex() == 0) { 
+                    loadVehiclesFromCentralStorage(); 
+                }
             }
         });
 
         this.add(tabs, BorderLayout.CENTER);
-
-        // FIX: loadNotifications now uses setNotificationCount to set the correct badge state on login
-        loadNotifications();          
+        
         loadVehiclesFromCentralStorage(); 
         loadPaymentInfo();
+        loadNotifications();  
         
         // Start persistent notification listener
         startNotificationClient();
     }
 
-    // --- NEW: Notification Client & Status Timer (Replaces Polling) ---
+    // --- Notification Client (Persistent Across Sessions) ---
 
     /**
      * Starts a dedicated thread to connect to the NetworkNotificationServer 
-     * and listen for pushed messages. Also starts a timer for non-notification status polling.
+     * and listen for pushed messages. Thread persists even after GUI logout.
      */
     private void startNotificationClient() {
-        // Assuming Main.NOTIFICATION_PORT is accessible
-        NotificationClient client = new NotificationClient(
+        // Check if notification client is already running for this user
+        if (backgroundNotificationClient != null && 
+            backgroundNotificationClient.getUserID().equals(ownerUser.getUserID()) &&
+            notificationThread != null && notificationThread.isAlive()) {
+            System.out.println("OwnerGUI: Notification client already running for " + ownerUser.getUserID());
+            
+            // Reconnect GUI callbacks to the existing client
+            backgroundNotificationClient.setNotificationCallback(this::addNotification);
+            
+            // Load any queued notifications from server
+            checkServerNotifications();
+            
+            // Start status refresh timer
+            startStatusRefreshTimer();
+            return;
+        }
+        
+        // Create new notification client
+        backgroundNotificationClient = new NotificationClient(
             "127.0.0.1", 
             Main.NOTIFICATION_PORT, 
-            ownerUser.getUserID()
+            ownerUser.getUserID(),
+            this::addNotification
         );
-        this.notificationThread = new Thread(client);
-        this.notificationThread.start();
         
-        // Timer for status checks/refreshes (Polling for request status)
+        notificationThread = new Thread(backgroundNotificationClient);
+        notificationThread.setDaemon(false); // NOT a daemon - stays alive after GUI closes
+        notificationThread.start();
+        
+        // Load any queued notifications from server
+        checkServerNotifications();
+        
+        // Start status refresh timer
+        startStatusRefreshTimer();
+    }
+    
+    /**
+     * Starts timer for status checks/refreshes.
+     */
+    private void startStatusRefreshTimer() {
+        if (statusRefreshTimer != null && statusRefreshTimer.isRunning()) {
+            return;
+        }
+        
         this.statusRefreshTimer = new Timer(5000, e -> {
             checkRequestStatuses(); 
         });
@@ -167,72 +194,138 @@ public class OwnerGUI extends JPanel {
     
     /**
      * Notification Client (WebSocket-like) for continuous server push.
+     * Callback interface to support background operation.
      */
-    private class NotificationClient implements Runnable {
+    private static class NotificationClient implements Runnable {
         private final String serverAddress;
         private final int port;
         private final String userID;
+        private NotificationCallback callback;
+        private volatile boolean running = true;
 
-        public NotificationClient(String serverAddress, int port, String userID) {
+        public NotificationClient(String serverAddress, int port, String userID, NotificationCallback callback) {
             this.serverAddress = serverAddress;
             this.port = port;
             this.userID = userID;
+            this.callback = callback;
+        }
+        
+        public String getUserID() {
+            return userID;
+        }
+        
+        public void setNotificationCallback(NotificationCallback callback) {
+            this.callback = callback;
+        }
+        
+        public void shutdown() {
+            this.running = false;
         }
 
         @Override
         public void run() {
-            try (Socket socket = new Socket(serverAddress, port);
-                 ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-                 ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
+            while (running) {
+                try (Socket socket = new Socket(serverAddress, port);
+                     ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+                     ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
 
-                System.out.println("OwnerGUI: Notification client connected.");
-                
-                // STEP 1: Send UserID to register the output stream on the server
-                oos.writeObject(userID);
-                oos.flush();
-                System.out.println("OwnerGUI: Sent UserID to server: " + userID);
-                
-                // STEP 1.5 (Hybrid Fallback): Check for messages queued before connection was established
-                checkServerNotifications();
+                    System.out.println("NotificationClient (Owner): Connected for user " + userID);
+                    
+                    oos.writeObject(userID);
+                    oos.flush();
 
-                // STEP 2: Continuously listen for pushed objects (notifications)
-                while (!socket.isClosed() && !Thread.currentThread().isInterrupted()) {
-                    try {
-                        Object received = ois.readObject();
-                        if (received instanceof String) {
-                            String notification = (String) received;
-                            addNotification(notification); 
+                    while (running && !socket.isClosed()) {
+                        try {
+                            Object received = ois.readObject();
+                            if (received instanceof String) {
+                                String notification = (String) received;
+                                
+                                if (callback != null) {
+                                    callback.onNotificationReceived(notification);
+                                } else {
+                                    saveNotificationToFile(notification);
+                                }
+                            }
+                        } catch (EOFException e) {
+                            break; 
+                        } catch (IOException | ClassNotFoundException e) {
+                            if (running) {
+                                System.err.println("NotificationClient (Owner): Error receiving: " + e.getMessage());
+                            }
+                            break;
                         }
-                    } catch (EOFException e) {
-                        break; 
-                    } catch (IOException | ClassNotFoundException e) {
-                        break;
+                    }
+
+                } catch (IOException e) {
+                    if (running) {
+                        System.err.println("NotificationClient (Owner): Connection failed: " + e.getMessage());
+                        System.out.println("NotificationClient (Owner): Retrying in 5 seconds...");
+                        try {
+                            Thread.sleep(5000);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                     }
                 }
-
+            }
+            System.out.println("NotificationClient (Owner): Shutdown for " + userID);
+        }
+        
+        //
+        private void saveNotificationToFile(String notification) {
+            String filename = userID + "_owner_notifications.txt";
+            String timestamp = TS_FMT.format(LocalDateTime.now());
+            String formattedNotif = "[" + timestamp + "] " + notification;
+            
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename, true))) {
+                writer.write(formattedNotif);
+                writer.newLine();
+                System.out.println("NotificationClient (Owner): Saved to file: " + formattedNotif);
             } catch (IOException e) {
-                System.err.println("OwnerGUI: Notification client failed to connect: " + e.getMessage());
-            } finally {
-                System.out.println("OwnerGUI: Notification client connection closed for " + userID);
+                System.err.println("NotificationClient (Owner): Error saving notification: " + e.getMessage());
+            }
+            
+            // INCREMENT THE COUNT FILE
+            String countFilename = filename + "_count.txt";
+            try {
+                int currentCount = 0;
+                File countFile = new File(countFilename);
+                if (countFile.exists()) {
+                    try (BufferedReader reader = new BufferedReader(new FileReader(countFile))) {
+                        String line = reader.readLine();
+                        if (line != null) {
+                            currentCount = Integer.parseInt(line.trim());
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Error parsing count file, resetting to 0");
+                    }
+                }
+                
+                // Increment and save
+                currentCount++;
+                try (PrintWriter writer = new PrintWriter(new FileWriter(countFile, false))) {
+                    writer.print(currentCount);
+                    System.out.println("NotificationClient (Owner): Incremented count to " + currentCount);
+                }
+            } catch (IOException e) {
+                System.err.println("NotificationClient (Owner): Error updating count: " + e.getMessage());
             }
         }
     }
     
-    /**
-     * Kept as a FALLBACK: Checks for new notifications from the server queue.
-     */
+    @FunctionalInterface
+    private interface NotificationCallback {
+        void onNotificationReceived(String notification);
+    }
+    
     private void checkServerNotifications() {
-        // Notifications pulled here are guaranteed to be new (unseen), as the Server clears the queue upon retrieval.
-        java.util.List<String> serverNotifications = server.getNotifications(ownerUser.getUserID());
+        List<String> serverNotifications = server.getNotifications(ownerUser.getUserID());
         for (String notification : serverNotifications) {
             addNotification(notification);
         }
     }
     
-    /**
-     * Checks the status of submitted requests and notifies the user of decisions.
-     * (Called by statusRefreshTimer)
-     */
     private void checkRequestStatuses() {
         java.util.Iterator<Map.Entry<String, String>> iterator = submittedRequests.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -242,25 +335,23 @@ public class OwnerGUI extends JPanel {
             
             Request request = server.getRequest(requestID);
             
-            if (request != null && !request.getStatus().equals("Pending")) {
-                Vehicle vehicle = (Vehicle) request.getData();
-                
-                if (request.getStatus().equals("Approved")) {
-                    addNotification("✓ Vehicle " + vehicle.getVehicleID() + " has been APPROVED by VC Controller");
-                    // Approved vehicles will be loaded via loadVehiclesFromCentralStorage on next refresh
-                } else if (request.getStatus().equals("Rejected")) {
-                    addNotification("✗ Vehicle " + vehicle.getVehicleID() + " has been REJECTED by VC Controller");
+            if (request == null || !request.getStatus().equals("Pending")) {
+                Vehicle vehicle = (Vehicle) (request != null ? request.getData() : null);
+                String vehicleID = (vehicle != null) ? vehicle.getVehicleID() : vehicleSignature;
+
+                if (request != null && request.getStatus().equals("Approved")) {
+                    addNotification("✓ Vehicle " + vehicleID + " has been APPROVED by VC Controller");
+                } else if (request != null && request.getStatus().equals("Rejected")) {
+                    addNotification("✗ Vehicle " + vehicleID + " has been REJECTED by VC Controller");
                     removeVehicleFromTable(vehicleSignature);
                 }
                 
-                iterator.remove(); // Remove processed request from tracking map
+                iterator.remove();
+                loadVehiclesFromCentralStorage(); 
             }
         }
     }
 
-    /**
-     * Removes a vehicle from the display table (used if registration is rejected).
-     */
     private void removeVehicleFromTable(String vehicleSignature) {
         SwingUtilities.invokeLater(() -> {
             for (int i = 0; i < tableModel.getRowCount(); i++) {
@@ -276,7 +367,6 @@ public class OwnerGUI extends JPanel {
     }
     
     private void updateNotificationBadge() {
-        // FIX: Only update if the user is NOT on the notification tab
         JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, this);
         if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
              notificationCount++;
@@ -286,7 +376,6 @@ public class OwnerGUI extends JPanel {
     }
     
     private void setNotificationCount(int count) {
-        // Used only on load to restore the persistent count
         this.notificationCount = count;
         if (count > 0) {
             badgeLabel.setText(String.valueOf(count));
@@ -294,12 +383,6 @@ public class OwnerGUI extends JPanel {
         } else {
             badgeLabel.setVisible(false);
         }
-    }
-
-    private void resetNotificationBadge() {
-        // Clears the red badge when the user clicks the tab
-        notificationCount = 0;
-        badgeLabel.setVisible(false);
     }
 
     private JPanel createNotificationsPanel() {
@@ -325,7 +408,7 @@ public class OwnerGUI extends JPanel {
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
             resetNotificationBadge();
-            saveNotifications(); // Save notification clearance
+            saveNotifications();
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -335,32 +418,60 @@ public class OwnerGUI extends JPanel {
 
     public void addNotification(String message) {
         String timestamp = TS_FMT.format(LocalDateTime.now());
+        String formattedMessage = "[" + timestamp + "] " + message;
+        
         SwingUtilities.invokeLater(() -> {
-            notificationListModel.addElement("[" + timestamp + "] " + message);
-            // This increments the badge *before* saving, if the user isn't on the tab
-            updateNotificationBadge(); 
-            saveNotifications(); 
+            notificationListModel.addElement(formattedMessage);
+            
+            // Always increment badge for NEW notifications
+            // Check if we're NOT on the notifications tab before incrementing
+            JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, OwnerGUI.this);
+            if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
+                notificationCount++;
+                badgeLabel.setText(String.valueOf(notificationCount));
+                badgeLabel.setVisible(true);
+            }
+            
+            saveNotifications();
+
         });
     }
 
-    /** Saves notifications to file for persistence. */
+    // Also update the saveNotifications method to ensure count is always saved:
+
     private void saveNotifications() {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(NOTIFICATION_FILE))) {
             for (int i = 0; i < notificationListModel.size(); i++) {
                 writer.write(notificationListModel.getElementAt(i));
                 writer.newLine();
             }
-            // FIX: Append the current UNSEEN count to a separate tracker for persistence
-            try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
-                 countWriter.print(this.notificationCount);
-            }
-
         } catch (IOException e) {
             System.err.println("Error saving notifications: " + e.getMessage());
         }
+        
+        // Always save the count separately
+        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
+            countWriter.print(this.notificationCount);
+            System.out.println("OwnerGUI: Saved notification count: " + this.notificationCount);
+        } catch (IOException e) {
+            System.err.println("Error saving notification count: " + e.getMessage());
+        }
     }
 
-    /** Loads notifications from file when GUI starts. */
+    // And ensure resetNotificationBadge() saves the cleared state:
+
+    private void resetNotificationBadge() {
+        notificationCount = 0;
+        badgeLabel.setVisible(false);
+        // Save the reset count immediately
+        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
+            countWriter.print(0);
+            System.out.println("OwnerGUI: Reset notification count to 0");
+        } catch (IOException e) {
+            System.err.println("Error saving reset notification count: " + e.getMessage());
+        }
+    }
+
     private void loadNotifications() {
         File file = new File(NOTIFICATION_FILE);
         if (!file.exists()) return;
@@ -374,7 +485,6 @@ public class OwnerGUI extends JPanel {
             System.err.println("Error loading notifications: " + e.getMessage());
         }
         
-        // FIX: Load the UNSEEN count from the tracker file
         File countFile = new File(NOTIFICATION_FILE + "_count.txt");
         if (countFile.exists()) {
             try (BufferedReader countReader = new BufferedReader(new FileReader(countFile))) {
@@ -382,7 +492,7 @@ public class OwnerGUI extends JPanel {
                 if (countLine != null) {
                     try {
                         int unseenCount = Integer.parseInt(countLine.trim());
-                        setNotificationCount(unseenCount); // Restore badge state
+                        setNotificationCount(unseenCount);
                     } catch (NumberFormatException e) {
                         System.err.println("Error parsing notification count.");
                     }
@@ -393,33 +503,26 @@ public class OwnerGUI extends JPanel {
         }
     }
     
-    /**
-     * Loads vehicle history from the central VC Controller/Server upon login,
-     * ensuring the user-entered Owner ID is displayed.
-     */
     private void loadVehiclesFromCentralStorage() {
         tableModel.setRowCount(0);
-        
-        // Use the login ID to fetch the history associated with this account
+        server.reloadState();
+
         List<Vehicle> vehicleHistory = controller.getOwnerVehicleHistory(ownerUser.getUserID()); 
         
         for (Vehicle vehicle : vehicleHistory) {
-             
-             // Retrieve the user-entered Owner ID from the Server's vehicle tracking map.
              String ownerEnteredID = server.getVehicleOwnerIDForDisplay(vehicle);
              if (ownerEnteredID == null || ownerEnteredID.isEmpty()) {
                  System.err.println("Owner ID not found in server map for vehicle: " + vehicle.getVehicleID());
-                 // Fallback to the login ID if the entered ID is somehow missing
                  ownerEnteredID = ownerUser.getUserID(); 
              }
              
              tableModel.addRow(new Object[]{
                  TS_FMT.format(LocalDateTime.now()), 
-                 ownerEnteredID, // Use the user-entered Owner ID for the table column
+                 ownerEnteredID,
                  vehicle.getMake(),
                  vehicle.getModel(),
                  vehicle.getYear(),
-                 vehicle.getVehicleID(), // VehicleID is the license plate
+                 vehicle.getVehicleID(),
                  vehicle.getLicenseState(),
                  vehicle.getDepartureSchedule().toString()
              });
@@ -471,49 +574,25 @@ public class OwnerGUI extends JPanel {
 
         int r = 0; 
 
-        gc.gridx = 0;
-        gc.gridy = r;
-        form.add(new JLabel("Owner ID(6 chars):"), gc); 
-        gc.gridx = 1;
-        gc.gridy = r++;
-        form.add(ownerIdField, gc);
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Owner ID(6 chars):"), gc); 
+        gc.gridx = 1; gc.gridy = r++; form.add(ownerIdField, gc);
 
-        gc.gridx = 0;
-        gc.gridy = r;
-        form.add(new JLabel("Vehicle Make:"), gc);
-        gc.gridx = 1;
-        gc.gridy = r++;
-        form.add(makeField, gc);
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Vehicle Make:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(makeField, gc);
 
-        gc.gridx = 0;
-        gc.gridy = r;
-        form.add(new JLabel("Vehicle Model:"), gc);
-        gc.gridx = 1;
-        gc.gridy = r++;
-        form.add(modelField, gc);
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Vehicle Model:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(modelField, gc);
 
         JPanel yearPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         yearPanel.setOpaque(false);
         yearPanel.add(yearSpinner);
-        gc.gridx = 0;
-        gc.gridy = r;
-        form.add(new JLabel("Vehicle Year:"), gc);
-        gc.gridx = 1;
-        gc.gridy = r++;
-        form.add(yearPanel, gc);
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Vehicle Year:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(yearPanel, gc);
 
-        gc.gridx = 0;
-        gc.gridy = r;
-        form.add(new JLabel("License Plate:"), gc);
-        gc.gridx = 1;
-        gc.gridy = r;
-        form.add(licenseField, gc);
-        gc.gridx = 2;
-        gc.gridy = r;
-        form.add(new JLabel("State:"), gc);
-        gc.gridx = 3;
-        gc.gridy = r++;
-        form.add(stateComboBox, gc);
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("License Plate:"), gc);
+        gc.gridx = 1; gc.gridy = r; form.add(licenseField, gc);
+        gc.gridx = 2; gc.gridy = r; form.add(new JLabel("State:"), gc);
+        gc.gridx = 3; gc.gridy = r++; form.add(stateComboBox, gc);
 
         JPanel departurePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         departurePanel.setOpaque(false);
@@ -526,12 +605,8 @@ public class OwnerGUI extends JPanel {
         departurePanel.add(new JLabel("Hour (0-23):"));
         departurePanel.add(departureHourSpinner);
 
-        gc.gridx = 0;
-        gc.gridy = r;
-        form.add(new JLabel("Departure Time:"), gc);
-        gc.gridx = 1;
-        gc.gridy = r++;
-        form.add(departurePanel, gc);
+        gc.gridx = 0; gc.gridy = r; form.add(new JLabel("Departure Time:"), gc);
+        gc.gridx = 1; gc.gridy = r++; form.add(departurePanel, gc);
 
         JButton registerButton = new JButton("Register Vehicle");
         JButton clearButton = new JButton("Clear form");
@@ -543,10 +618,7 @@ public class OwnerGUI extends JPanel {
         buttons.add(clearButton);
         buttons.add(logoutButton);
 
-        gc.gridx = 0;
-        gc.gridy = r;
-        gc.gridwidth = 4; 
-        form.add(buttons, gc);
+        gc.gridx = 0; gc.gridy = r; gc.gridwidth = 4; form.add(buttons, gc);
 
         rootPanel.add(form);
         rootPanel.add(Box.createVerticalStrut(12));
@@ -562,15 +634,16 @@ public class OwnerGUI extends JPanel {
         registerButton.addActionListener(this::onRegister);
         clearButton.addActionListener(e -> clearForm());
         logoutButton.addActionListener(e -> {
-            // Stop the dedicated notification listener thread
-            if (notificationThread != null && notificationThread.isAlive()) { 
-                notificationThread.interrupt();
-            }
-            // Stop the non-notification status polling timer
+            // Notification thread runs in background
             if (statusRefreshTimer != null) {
                 statusRefreshTimer.stop();
             }
-            // Save notifications state (including unseen count)
+            
+            // Disconnect GUI callback but keep socket alive
+            if (backgroundNotificationClient != null) {
+                backgroundNotificationClient.setNotificationCallback(null);
+            }
+            
             saveNotifications();
             onLogout.run();
         });
@@ -627,10 +700,7 @@ public class OwnerGUI extends JPanel {
         
         JLabel header = new JLabel("Change Your Login Password", SwingConstants.CENTER);
         header.setFont(new Font("SansSerif", Font.BOLD, 18));
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.gridwidth = 2;
-        panel.add(header, gbc);
+        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2; panel.add(header, gbc);
         
         oldPassField = new JPasswordField(20);
         newPassField = new JPasswordField(20);
@@ -682,7 +752,6 @@ public class OwnerGUI extends JPanel {
         }
 
         ownerUser.setPassword(newPass);
-        // FileBasedUserStore.saveUser(ownerUser); // Assuming this exists
 
         passStatusLabel.setForeground(new Color(34, 139, 34));
         passStatusLabel.setText("Password successfully updated! New password is now active.");
@@ -726,17 +795,12 @@ public class OwnerGUI extends JPanel {
         }
     }
 
-    /**
-     * Submits vehicle as a request to the server.
-     * FIX: The user-entered Owner ID is sent to a new Server method for tracking.
-     */
     private void onRegister(ActionEvent e) {
         if (this.paymentInfo == null || this.paymentInfo.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please add payment info (Tab 2) before registering a vehicle.", "Payment Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        // FIX: Capture the user-entered Owner ID
         String ownerId = ownerIdField.getText().trim();
         if (ownerId.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter an Owner ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
@@ -754,7 +818,6 @@ public class OwnerGUI extends JPanel {
             return;
         }
 
-        // Assuming isVehicleInSystem uses license + state for unique check
         if (controller.isVehicleInSystem(license, state)) {
             JOptionPane.showMessageDialog(this, "This vehicle (License + State) is already active or available in the system.", "Duplicate Error", JOptionPane.ERROR_MESSAGE);
             return;
@@ -779,23 +842,15 @@ public class OwnerGUI extends JPanel {
 
         String departureString = departureTime.toString();
         
-        // Create Vehicle object (using provided Vehicle class)
-        // vehicleID = licensePlate, as per your Vehicle class constructor
         Vehicle newVehicle = new Vehicle(license, make, model, year, license, state, departureTime);
         
-        // SEND REQUEST TO SERVER (Sender ID = Owner's login ID)
         Request request = server.createRequest(ownerUser.getUserID(), "VEHICLE_REGISTRATION", newVehicle);
-        
-        // FIX: Explicitly map the user-entered Owner ID to the license plate on the server
         server.mapVehicleOwnerIDForDisplay(license, ownerId); 
-        
         controller.processVehicleRequest(request);
         
-        // Track the request for status checking
         String vehicleSignature = license + state;
         submittedRequests.put(vehicleSignature, request.getRequestID());
         
-        // ACKNOWLEDGMENT: Show that request was sent
         JOptionPane.showMessageDialog(this, 
             "Vehicle Registration Request Sent!\n" +
             "Request ID: " + request.getRequestID() + "\n" +
@@ -806,9 +861,7 @@ public class OwnerGUI extends JPanel {
         
         addNotification("Vehicle registration request for " + license + " submitted and acknowledged by server");
 
-        // Add to local table with "Awaiting Approval" status
         String ts = TS_FMT.format(LocalDateTime.now());
-        // FIX: Use the user-entered ownerId for the table row
         tableModel.addRow(new Object[]{
                 ts, ownerId, make, model, year, license, state, departureString
         });
@@ -969,7 +1022,7 @@ public class OwnerGUI extends JPanel {
         }
     }
 
-    // --- DocumentFilter Inner Classes (Remain Unchanged) ---
+    // --- DocumentFilter Inner Classes ---
     private static class AlphanumericFilter extends DocumentFilter {
         private final int maxLength;
 

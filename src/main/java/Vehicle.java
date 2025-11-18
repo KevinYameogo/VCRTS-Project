@@ -20,7 +20,7 @@ public class Vehicle implements Serializable {
 
     //Constructor
     public Vehicle(String vehicleID, String make, String model, int year, String licensePlate, String state, LocalDateTime departureSchedule) {
-        this.vehicleID = licensePlate;  // KEEPING VEHICLE ID = LICENSE PLATE AS YOU REQUESTED
+        this.vehicleID = licensePlate;  
         this.make = make;
         this.model = model;
         this.year = year;

@@ -15,13 +15,9 @@ import java.util.Map;
 import java.util.ArrayList; 
 import java.util.List; 
 import java.net.Socket;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 
 /**
- * ClientGUI with client-server model implementation.
- * FIXED: Integrated WebSocket client, restored input filters in Billing dialog, 
- * and fixed notification badge persistence across sessions.
+ * ClientGUI with persistent notification client .
  */
 public class ClientGUI extends JPanel {
 
@@ -31,8 +27,12 @@ public class ClientGUI extends JPanel {
     private final Server server;
 
     // Request tracking
-    private Map<String, String> submittedRequests; // jobID -> requestID
-    // private Timer notificationCheckTimer; // Replaced by statusRefreshTimer
+    private Map<String, String> submittedRequests;
+    
+    // Notification components
+    private static NotificationClient backgroundNotificationClient; // STATIC for persistence
+    private static Thread notificationThread; // STATIC for persistence
+    private Timer statusRefreshTimer;
 
     private JTextField clientIdField; 
     private JSpinner durationSpinner;
@@ -60,12 +60,8 @@ public class ClientGUI extends JPanel {
     private JTable table;
     
     private JLabel badgeLabel;
-    private int notificationCount = 0; // Tracks unseen notifications (red badge count)
+    private int notificationCount = 0;
     private int notificationsTabIndex;
-    
-    // NEW: Persistent Client for Notifications
-    private Thread notificationThread;
-    private Timer statusRefreshTimer; // Timer for non-notification status checks
 
     private final String BILLING_FILE;
     private final String NOTIFICATION_FILE;
@@ -121,37 +117,72 @@ public class ClientGUI extends JPanel {
             public void stateChanged(ChangeEvent e) {
                 if (tabs.getSelectedIndex() == notificationsTabIndex) {
                     resetNotificationBadge();
-                } 
+                } else if (tabs.getSelectedIndex() == 0 || tabs.getSelectedIndex() == 1) { 
+                    loadJobsFromCentralStorage(); 
+                }
             }
         });
         
         // Load persistent data and restore badge count
-        loadNotifications();
         loadJobsFromCentralStorage();
         loadBillingInfo();
-        refreshJobTable();
-        
-        // Start persistent notification listener
+        loadNotifications();
+
+        // Start persistent notification listener (only if not already running)
         startNotificationClient();
     }
     
-    // --- NEW: Notification Client & Status Timer (Replaces Polling) ---
+    // --- Notification Client (Persistent Across Sessions) ---
     
     /**
      * Starts a dedicated thread to connect to the NetworkNotificationServer 
-     * and listen for pushed messages. Also starts a timer for non-notification status polling.
+     * and listen for pushed messages. Thread persists even after GUI logout.
      */
     private void startNotificationClient() {
-        // Assuming Main.NOTIFICATION_PORT is accessible
-        NotificationClient client = new NotificationClient(
+        // Check if notification client is already running for this user
+        if (backgroundNotificationClient != null && 
+            backgroundNotificationClient.getUserID().equals(clientUser.getUserID()) &&
+            notificationThread != null && notificationThread.isAlive()) {
+            System.out.println("ClientGUI: Notification client already running for " + clientUser.getUserID());
+            
+            // Reconnect GUI callbacks to the existing client
+            backgroundNotificationClient.setNotificationCallback(this::addNotification);
+            
+            // Load any queued notifications from server
+            checkServerNotifications();
+            
+            // Start status refresh timer
+            startStatusRefreshTimer();
+            return;
+        }
+        
+        // Create new notification client
+        backgroundNotificationClient = new NotificationClient(
             "127.0.0.1", 
             Main.NOTIFICATION_PORT, 
-            clientUser.getUserID()
+            clientUser.getUserID(),
+            this::addNotification // Callback for adding notifications to GUI
         );
-        this.notificationThread = new Thread(client);
-        this.notificationThread.start();
         
-        // Timer for status checks/refreshes (Polling for request status and job status changes)
+        notificationThread = new Thread(backgroundNotificationClient);
+        notificationThread.setDaemon(false); // NOT a daemon - stays alive after GUI closes
+        notificationThread.start();
+        
+        // Load any queued notifications from server
+        checkServerNotifications();
+        
+        // Start status refresh timer
+        startStatusRefreshTimer();
+    }
+    
+    /**
+     * Starts timer for status checks/refreshes (Polling for request status and job status changes)
+     */
+    private void startStatusRefreshTimer() {
+        if (statusRefreshTimer != null && statusRefreshTimer.isRunning()) {
+            return; // Already running
+        }
+        
         this.statusRefreshTimer = new Timer(5000, e -> {
             checkRequestStatuses(); 
             refreshJobTable(); 
@@ -161,63 +192,145 @@ public class ClientGUI extends JPanel {
     
     /**
      * Notification Client (WebSocket-like) for continuous server push.
+     * callback interface to support background operation.
      */
-    private class NotificationClient implements Runnable {
+    private static class NotificationClient implements Runnable {
         private final String serverAddress;
         private final int port;
         private final String userID;
+        private NotificationCallback callback;
+        private volatile boolean running = true;
 
-        public NotificationClient(String serverAddress, int port, String userID) {
+        public NotificationClient(String serverAddress, int port, String userID, NotificationCallback callback) {
             this.serverAddress = serverAddress;
             this.port = port;
             this.userID = userID;
+            this.callback = callback;
+        }
+        
+        public String getUserID() {
+            return userID;
+        }
+        
+        public void setNotificationCallback(NotificationCallback callback) {
+            this.callback = callback;
+        }
+        
+        public void shutdown() {
+            this.running = false;
         }
 
         @Override
         public void run() {
-            try (Socket socket = new Socket(serverAddress, port);
-                 ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-                 ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
+            while (running) {
+                try (Socket socket = new Socket(serverAddress, port);
+                     ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+                     ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
 
-                System.out.println("ClientGUI: Notification client connected.");
-                
-                // STEP 1: Send UserID to register the output stream on the server
-                oos.writeObject(userID);
-                oos.flush();
-                System.out.println("ClientGUI: Sent UserID to server: " + userID);
-                
-                // STEP 1.5 (Hybrid Fallback): Check for messages queued before connection was established
-                checkServerNotifications();
+                    System.out.println("NotificationClient: Connected for user " + userID);
+                    
+                    // Send UserID to register
+                    oos.writeObject(userID);
+                    oos.flush();
 
-                // STEP 2: Continuously listen for pushed objects (notifications)
-                while (!socket.isClosed() && !Thread.currentThread().isInterrupted()) {
-                    try {
-                        Object received = ois.readObject();
-                        if (received instanceof String) {
-                            String notification = (String) received;
-                            addNotification(notification); 
+                    // Continuously listen for pushed objects (notifications)
+                    while (running && !socket.isClosed()) {
+                        try {
+                            Object received = ois.readObject();
+                            if (received instanceof String) {
+                                String notification = (String) received;
+                                
+                                // Deliver notification via callback
+                                if (callback != null) {
+                                    callback.onNotificationReceived(notification);
+                                } else {
+                                    // Fallback: save directly to file if no GUI is active
+                                    saveNotificationToFile(notification);
+                                }
+                            }
+                        } catch (EOFException e) {
+                            break; 
+                        } catch (IOException | ClassNotFoundException e) {
+                            if (running) {
+                                System.err.println("NotificationClient: Error receiving: " + e.getMessage());
+                            }
+                            break;
                         }
-                    } catch (EOFException e) {
-                        break; 
-                    } catch (IOException | ClassNotFoundException e) {
-                        break;
+                    }
+
+                } catch (IOException e) {
+                    if (running) {
+                        System.err.println("NotificationClient: Connection failed: " + e.getMessage());
+                        System.out.println("NotificationClient: Retrying in 5 seconds...");
+                        try {
+                            Thread.sleep(5000);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                     }
                 }
-
-            } catch (IOException e) {
-                System.err.println("ClientGUI: Notification client failed to connect: " + e.getMessage());
-            } finally {
-                System.out.println("ClientGUI: Notification client connection closed for " + userID);
             }
+            System.out.println("NotificationClient: Shutdown for " + userID);
         }
+        
+        /**
+     * Saves notification directly to file when no GUI callback is available.
+     */
+    private void saveNotificationToFile(String notification) {
+        String filename = userID + "_client_notifications.txt";
+        String timestamp = TS_FMT.format(LocalDateTime.now());
+        String formattedNotif = "[" + timestamp + "] " + notification;
+        
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename, true))) {
+            writer.write(formattedNotif);
+            writer.newLine();
+            System.out.println("NotificationClient: Saved to file: " + formattedNotif);
+        } catch (IOException e) {
+            System.err.println("NotificationClient: Error saving notification: " + e.getMessage());
+        }
+        
+        // INCREMENT THE COUNT FILE
+        String countFilename = filename + "_count.txt";
+        try {
+            int currentCount = 0;
+            File countFile = new File(countFilename);
+            if (countFile.exists()) {
+                try (BufferedReader reader = new BufferedReader(new FileReader(countFile))) {
+                    String line = reader.readLine();
+                    if (line != null) {
+                        currentCount = Integer.parseInt(line.trim());
+                    }
+                } catch (NumberFormatException e) {
+                    System.err.println("Error parsing count file, resetting to 0");
+                }
+            }
+            
+            // Increment and save
+            currentCount++;
+            try (PrintWriter writer = new PrintWriter(new FileWriter(countFile, false))) {
+                writer.print(currentCount);
+                System.out.println("NotificationClient: Incremented count to " + currentCount);
+            }
+        } catch (IOException e) {
+            System.err.println("NotificationClient: Error updating count: " + e.getMessage());
+        }
+    }
     }
     
     /**
-     * Kept as a FALLBACK: Checks for new notifications from the server queue.
+     * Callback interface for notification delivery.
+     */
+    @FunctionalInterface
+    private interface NotificationCallback {
+        void onNotificationReceived(String notification);
+    }
+    
+    /**
+     * Checks for new notifications from the server queue (fallback).
      */
     private void checkServerNotifications() {
-        // Notifications pulled here are guaranteed to be new (unseen), as the Server clears the queue upon retrieval.
-        java.util.List<String> serverNotifications = server.getNotifications(clientUser.getUserID());
+        List<String> serverNotifications = server.getNotifications(clientUser.getUserID());
         for (String notification : serverNotifications) {
             addNotification(notification);
         }
@@ -225,7 +338,6 @@ public class ClientGUI extends JPanel {
     
     /**
      * Checks the status of submitted requests and updates the UI accordingly.
-     * (Called by statusRefreshTimer)
      */
     private void checkRequestStatuses() {
         java.util.Iterator<Map.Entry<String, String>> iterator = submittedRequests.entrySet().iterator();
@@ -235,38 +347,21 @@ public class ClientGUI extends JPanel {
             String requestID = entry.getValue();
             
             Request request = server.getRequest(requestID);
-            if (request != null && !request.getStatus().equals("Pending")) {
-                // Request has been processed
-                if (request.getStatus().equals("Approved")) {
-                    updateJobStatusInTable(jobID, "Pending");
-                } else if (request.getStatus().equals("Rejected")) {
+            
+            if (request == null || !request.getStatus().equals("Pending")) {
+                if (request != null && request.getStatus().equals("Approved")) {
+                    addNotification("✓ Job " + jobID + " has been APPROVED by VC Controller");
+                } else if (request != null && request.getStatus().equals("Rejected")) {
+                    addNotification("✗ Job " + jobID + " has been REJECTED by VC Controller");
                     removeJobFromTable(jobID);
                 }
                 
                 iterator.remove();
+                loadJobsFromCentralStorage(); 
             }
         }
     }
     
-    // --- Existing Methods ---
-    
-    /**
-     * Updates the job status in the display table.
-     */
-    private void updateJobStatusInTable(String jobID, String newStatus) {
-        SwingUtilities.invokeLater(() -> {
-            for (int i = 0; i < tableModel.getRowCount(); i++) {
-                if (tableModel.getValueAt(i, 2).equals(jobID)) {
-                    tableModel.setValueAt(newStatus, i, 3);
-                    break;
-                }
-            }
-        });
-    }
-    
-    /**
-     * Removes a job from the display table (for rejected jobs).
-     */
     private void removeJobFromTable(String jobID) {
         SwingUtilities.invokeLater(() -> {
             for (int i = 0; i < tableModel.getRowCount(); i++) {
@@ -279,7 +374,6 @@ public class ClientGUI extends JPanel {
     }
     
     private void updateNotificationBadge() {
-        // Only update if the user is NOT on the notification tab
         JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, this);
         if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
              notificationCount++;
@@ -289,7 +383,6 @@ public class ClientGUI extends JPanel {
     }
 
     private void setNotificationCount(int count) {
-        // Used only on load to restore the persistent count
         this.notificationCount = count;
         if (count > 0) {
             badgeLabel.setText(String.valueOf(count));
@@ -297,11 +390,6 @@ public class ClientGUI extends JPanel {
         } else {
             badgeLabel.setVisible(false);
         }
-    }
-
-    private void resetNotificationBadge() {
-        notificationCount = 0;
-        badgeLabel.setVisible(false);
     }
 
     private JPanel createNotificationsPanel() {
@@ -337,36 +425,60 @@ public class ClientGUI extends JPanel {
 
     public void addNotification(String message) {
         String timestamp = TS_FMT.format(LocalDateTime.now());
+        String formattedMessage = "[" + timestamp + "] " + message;
+        
         SwingUtilities.invokeLater(() -> {
-            notificationListModel.addElement("[" + timestamp + "] " + message);
-            updateNotificationBadge();
+            notificationListModel.addElement(formattedMessage);
+            
+            // Always increment badge for NEW notifications
+            // Check if we're NOT on the notifications tab before incrementing
+            JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, ClientGUI.this);
+            if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
+                notificationCount++;
+                badgeLabel.setText(String.valueOf(notificationCount));
+                badgeLabel.setVisible(true);
+            }
+            
             saveNotifications();
+
+    
         });
     }
-    
-    /**
-     * Saves notifications and the unread count to files for persistence.
-     */
+
+    // Also update the saveNotifications method to ensure count is ALWAYS saved:
+
     private void saveNotifications() {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(NOTIFICATION_FILE))) {
             for (int i = 0; i < notificationListModel.size(); i++) {
                 writer.write(notificationListModel.getElementAt(i));
                 writer.newLine();
             }
-            
-            // FIX: Save the current UNSEEN count to a separate tracker file
-            try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
-                 countWriter.print(this.notificationCount);
-            }
-
         } catch (IOException e) {
             System.err.println("Error saving notifications: " + e.getMessage());
         }
+        
+        // ALWAYS save the count separately
+        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
+            countWriter.print(this.notificationCount);
+            System.out.println("ClientGUI: Saved notification count: " + this.notificationCount);
+        } catch (IOException e) {
+            System.err.println("Error saving notification count: " + e.getMessage());
+        }
+    }
+
+    // And ensure resetNotificationBadge() saves the cleared state:
+    private void resetNotificationBadge() {
+        notificationCount = 0;
+        badgeLabel.setVisible(false);
+        // Save the reset count immediately
+        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
+            countWriter.print(0);
+            System.out.println("ClientGUI: Reset notification count to 0");
+        } catch (IOException e) {
+            System.err.println("Error saving reset notification count: " + e.getMessage());
+        }
     }
     
-    /**
-     * Loads notifications and restores the unread count from files.
-     */
     private void loadNotifications() {
         File file = new File(NOTIFICATION_FILE);
         if (!file.exists()) return;
@@ -380,7 +492,6 @@ public class ClientGUI extends JPanel {
             System.err.println("Error loading notifications: " + e.getMessage());
         }
         
-        // FIX: Load the UNSEEN count from the tracker file
         File countFile = new File(NOTIFICATION_FILE + "_count.txt");
         if (countFile.exists()) {
             try (BufferedReader countReader = new BufferedReader(new FileReader(countFile))) {
@@ -388,7 +499,7 @@ public class ClientGUI extends JPanel {
                 if (countLine != null) {
                     try {
                         int unseenCount = Integer.parseInt(countLine.trim());
-                        setNotificationCount(unseenCount); // Restore badge state
+                        setNotificationCount(unseenCount);
                     } catch (NumberFormatException e) {
                         System.err.println("Error parsing notification count.");
                     }
@@ -505,14 +616,17 @@ public class ClientGUI extends JPanel {
         submitButton.addActionListener(this::onSubmit);
         clearButton.addActionListener(e -> clearForm());
         logoutButton.addActionListener(e -> {
-            // Stop the dedicated notification listener thread
-            if (notificationThread != null && notificationThread.isAlive()) { 
-                notificationThread.interrupt();
-            }
-            // Stop the non-notification status polling timer
+            // Notification thread runs in background
+            // Only stop the status refresh timer
             if (statusRefreshTimer != null) {
                 statusRefreshTimer.stop();
             }
+            
+            // Disconnect GUI callback but keep socket alive
+            if (backgroundNotificationClient != null) {
+                backgroundNotificationClient.setNotificationCallback(null);
+            }
+            
             saveNotifications();
             onLogout.run();
         });
@@ -733,8 +847,6 @@ public class ClientGUI extends JPanel {
         }
 
         clientUser.setPassword(newPass);
-        // Assuming FileBasedUserStore handles user persistence, this is fine.
-        // FileBasedUserStore.saveUser(clientUser); 
 
         passStatusLabel.setForeground(new Color(34, 139, 34)); 
         passStatusLabel.setText("Password successfully updated! New password is now active.");
@@ -748,7 +860,6 @@ public class ClientGUI extends JPanel {
         int statusColumnIndex = 3; 
         int jobIDColumnIndex = 2;  
 
-        // Check controller status for existing rows 
         for (int i = 0; i < tableModel.getRowCount(); i++) {
             String jobID = (String) tableModel.getValueAt(i, jobIDColumnIndex);
             String liveStatus = controller.getJobStatus(jobID);
@@ -758,42 +869,28 @@ public class ClientGUI extends JPanel {
                 !liveStatus.equalsIgnoreCase("Job not found") &&
                 !currentTableStatus.equalsIgnoreCase("Awaiting Approval")) {
                 
-                // Only update status if it has changed AND the job is past the initial approval stage
                 tableModel.setValueAt(liveStatus, i, statusColumnIndex);
             }
         }
     }
     
-    /**
-     * Loads job history from the central controller/server upon login.
-     * FIX: Use the actual Client ID from the history lookup (stored in Server)
-     * instead of clientUser.getUserID(), to ensure the column displays the 
-     * correct user-entered ID.
-     */
     private void loadJobsFromCentralStorage() {
-        // Clear the table before loading history
         tableModel.setRowCount(0);
+        server.reloadState();
         
-        // Call the VCController method to get all jobs submitted by this login user.
-        // Note: clientUser.getUserID() is the login ID, used to filter history.
         List<Job> jobHistory = controller.getClientJobHistory(clientUser.getUserID());
         
         for (Job job : jobHistory) {
-             // Fetch current status from controller (which checks its lists)
              String status = controller.getJobStatus(job.getJobID()); 
-             
-             // FIX: Retrieve the user-entered Client ID from the Server's job tracking map.
              String clientEnteredID = server.getClientIDForJob(job);
              if (clientEnteredID == null) {
-                 // Fallback if data integrity is lost
                  System.err.println("Client ID not found in server map for job: " + job.getJobID());
-                 clientEnteredID = job.getJobID().split("-")[0]; // Attempt to extract from job ID
+                 clientEnteredID = job.getJobID().split("-")[0];
              }
              
-             // Populate the table model with persistent data
              tableModel.addRow(new Object[]{
-                 TS_FMT.format(LocalDateTime.now()), // Using current time for 'Timestamp' on load
-                 clientEnteredID, // FIX: Use the user-entered Client ID
+                 TS_FMT.format(LocalDateTime.now()), 
+                 clientEnteredID,
                  job.getJobID(),
                  status, 
                  job.getDuration(), 
@@ -804,7 +901,6 @@ public class ClientGUI extends JPanel {
         
         System.out.println("ClientGUI: Loaded " + jobHistory.size() + " jobs from central storage.");
     }
-
 
     private void onAddBillingInfo(ActionEvent e) {
         if (billingDialog == null) {
@@ -840,27 +936,20 @@ public class ClientGUI extends JPanel {
         }
     }
 
-    /**
-     * Submits job as a request to the server.
-     * FIX: Use the user-entered Client ID in the job ID prefix.
-     */
     private void onSubmit(ActionEvent e) {
         if (this.billingInfo == null || this.billingInfo.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please add billing info (Tab 3) before submitting a job.", "Billing Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        // FIX: Use the user-entered Client ID from the text field
         String clientID = clientIdField.getText().trim(); 
         if (clientID.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter a Client ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
         
-        // Use the user-entered Client ID to prefix the Job ID
         String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
 
-        // Check if the job ID exists in the centralized controller
         if (controller.isJobInSystem(jobID)) {
             JOptionPane.showMessageDialog(this, "A job with ID '" + jobID + "' already exists in the system. Try again.", "Duplicate Job ID", JOptionPane.ERROR_MESSAGE);
             return;
@@ -890,17 +979,13 @@ public class ClientGUI extends JPanel {
         int durationInHours = durationUnit.equals("days") ? (durationAmount * 24) : durationAmount;
         String deadlineString = deadline.toString();
 
-        // Use the actual Job class
         Job newJob = new Job(jobID, durationInHours, redundancy, deadline); 
         
-        // SEND REQUEST TO SERVER (Sender ID = User's login ID)
         Request request = server.createRequest(clientUser.getUserID(), "JOB_SUBMISSION", newJob);
         controller.processJobRequest(request); 
         
-        // Track the request for status checking
         submittedRequests.put(jobID, request.getRequestID());
         
-        // ACKNOWLEDGMENT: Show that request was sent
         JOptionPane.showMessageDialog(this, 
             "Job Request Sent!\n" +
             "Request ID: " + request.getRequestID() + "\n" +
@@ -911,9 +996,7 @@ public class ClientGUI extends JPanel {
         
         addNotification("Job request " + jobID + " submitted and acknowledged by server");
 
-        // Add to local table with "Awaiting Approval" status
         String ts = TS_FMT.format(LocalDateTime.now());
-        // FIX: Use the user-entered clientID for the table row
         tableModel.addRow(new Object[]{ts, clientID, jobID, "Awaiting Approval", durationInHours, deadlineString, redundancy}); 
     }
 
@@ -937,7 +1020,6 @@ public class ClientGUI extends JPanel {
 
                 if (parts.length == 5) {
                     billingTableModel.addRow(new Object[]{"Name on Card", parts[0]});
-                    // Masking card number for display
                     billingTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + parts[1].substring(12)});
                     billingTableModel.addRow(new Object[]{"Expiry", parts[3] + "/" + parts[4]});
                 }
@@ -948,8 +1030,8 @@ public class ClientGUI extends JPanel {
                 this.billingInfo = "";
                 clientUser.setBillingInfo(""); 
             }
-        } catch (IOException e) {
-            e.printStackTrace();
+        } catch (IOException ex) {
+            ex.printStackTrace();
             JOptionPane.showMessageDialog(this, "Error loading billing info from " + BILLING_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
         }
     }

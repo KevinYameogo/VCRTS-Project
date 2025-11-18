@@ -7,10 +7,10 @@ import java.awt.event.ActionEvent;
 import java.io.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * VCControllerGUI with request approval/rejection functionality.
- * FIX: Ensures the user-entered Owner ID is stored in vehicles.csv.
  */
 public class VCControllerGUI extends JPanel {
 
@@ -60,7 +60,14 @@ public class VCControllerGUI extends JPanel {
         startRequestRefreshTimer();
     }
 
+    public void stopTimer() {
+        if (requestRefreshTimer != null) {
+            requestRefreshTimer.stop();
+        }
+    }
+
     private void startRequestRefreshTimer() {
+        // The timer ensures that VCController instances see the pending request list
         requestRefreshTimer = new Timer(2000, e -> refreshPendingRequests());
         requestRefreshTimer.start();
     }
@@ -96,12 +103,10 @@ public class VCControllerGUI extends JPanel {
         backButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         backButton.addActionListener((ActionEvent e) -> {
-            if (requestRefreshTimer != null) {
-                requestRefreshTimer.stop();
-            }
-            saveNotifications(); // Save before leaving
-            // FIX: Ensure pending requests persist by saving the server's state
-            server.saveState(); 
+            // Stop the timer and save state before leaving
+            stopTimer();
+            saveNotifications();
+            server.saveState();
             if (onBack != null) {
                 onBack.run();
             }
@@ -129,7 +134,6 @@ public class VCControllerGUI extends JPanel {
         leftGbc.weightx = 1.0;
         leftGbc.insets = new Insets(0, 0, 10, 0);
 
-        // Make pending requests panel BIGGER (60%)
         leftGbc.gridy = 0;
         leftGbc.weighty = 0.6;
         leftPanel.add(createRequestsPanel(), leftGbc);
@@ -188,15 +192,14 @@ public class VCControllerGUI extends JPanel {
         ) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 4; // Only Actions column editable
+                return column == 4; 
             }
         };
 
         requestTable = new JTable(requestTableModel);
-        requestTable.setRowHeight(80); // taller for stacked buttons/icons
+        requestTable.setRowHeight(80); 
         requestTable.setFont(new Font("SansSerif", Font.PLAIN, 12));
 
-        // Actions column uses vertical icon buttons
         requestTable.getColumn("Actions").setCellRenderer(new ButtonRenderer());
         requestTable.getColumn("Actions").setCellEditor(new ButtonEditor(new JCheckBox()));
 
@@ -216,8 +219,12 @@ public class VCControllerGUI extends JPanel {
 
     /**
      * Refreshes the pending requests table from the server.
+     * Ensures the server state is reloaded from disk first for multi-instance sync.
      */
     private void refreshPendingRequests() {
+        // Reload server state to ensure we see approvals/rejections made in other instances.
+        server.reloadState();
+
         SwingUtilities.invokeLater(() -> {
             requestTableModel.setRowCount(0);
             for (Request req : server.getPendingRequests()) {
@@ -226,7 +233,7 @@ public class VCControllerGUI extends JPanel {
                         req.getSenderID(),
                         req.getRequestType(),
                         req.getTimestamp().format(TS_FMT),
-                        req.getRequestID() // Keep ID in Actions cell for the editor
+                        req.getRequestID() 
                 });
             }
         });
@@ -256,7 +263,7 @@ public class VCControllerGUI extends JPanel {
         JButton clearButton = new JButton("Clear All");
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
-            saveNotifications();
+            saveNotifications(); 
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -467,7 +474,7 @@ public class VCControllerGUI extends JPanel {
         });
     }
 
-    // ============== CSV HELPERS (STORE ONLY ON ACCEPT) ==============
+    //  CSV HELPERS (STORE ONLY ON ACCEPT)
 
     /** Append an approved job submission to jobs.csv */
     private void appendApprovedJobToCSV(Job job, String clientEnteredID) {
@@ -481,10 +488,9 @@ public class VCControllerGUI extends JPanel {
             if (writeHeader) {
                 fw.write("timestamp,client_id,job_id,status,duration_hours,deadline,redundancy\n");
             }
-            // Use the clientEnteredID parameter for the client_id column
             String line = String.join(",",
                     escape(ts),
-                    escape(clientEnteredID), 
+                    escape(clientEnteredID),
                     escape(job.getJobID()),
                     escape(job.getStatus() == null ? "Pending" : job.getStatus()),
                     String.valueOf(job.getDuration()),
@@ -499,44 +505,43 @@ public class VCControllerGUI extends JPanel {
         }
     }
 
-    /** Append an approved vehicle registration to vehicles.csv (full details) 
-     * FIX: Use the user-entered owner ID retrieved from the Server map.
-    */
+    /**
+     * Append an approved vehicle registration to vehicles.csv 
+     */
     private void appendApprovedVehicleToCSV(Vehicle vehicle, String loginId) {
-      if (vehicle == null) return;
-      
-      // FIX: Retrieve the user-entered Owner ID using the new Server method
-      String ownerEnteredId = server.getVehicleOwnerIDForDisplay(vehicle);
-      if (ownerEnteredId == null || ownerEnteredId.isEmpty()) {
-          // Fallback, though Server should ideally have this mapped
-          ownerEnteredId = loginId;
-      }
-      
-      String ts = TS_FMT.format(LocalDateTime.now());
+        if (vehicle == null) return;
 
-      File out = new File(VEHICLES_CSV);
-      boolean writeHeader = !out.exists() || out.length() == 0;
+        String ownerEnteredId = server.getVehicleOwnerIDForDisplay(vehicle);
+        if (ownerEnteredId == null || ownerEnteredId.isEmpty()) {
+            // Fallback, though Server should ideally have this mapped
+            ownerEnteredId = loginId;
+        }
 
-      try (FileWriter fw = new FileWriter(out, true)) {
-          if (writeHeader) {
-              fw.write("timestamp,owner_id,license,state,make,model,year,departure_schedule\n");
-          }
-          String line = String.join(",",
-                  escape(ts),
-                  escape(ownerEnteredId), // FIX: Use the user-entered Owner ID
-                  escape(vehicle.getVehicleID()),             // license plate
-                  escape(vehicle.getLicenseState()),         // state
-                  escape(vehicle.getMake()),                 // make
-                  escape(vehicle.getModel()),                // model
-                  escape(String.valueOf(vehicle.getYear())),
-                  escape(vehicle.getDepartureSchedule().toString()) // ISO datetime
-          );
-          fw.write(line + "\n");
-          logToFile("vehicles.csv: appended " + vehicle.getVehicleID());
-      } catch (IOException ex) {
-          ex.printStackTrace();
-          JOptionPane.showMessageDialog(this, "Error writing vehicles.csv: " + ex.getMessage(), "I/O Error", JOptionPane.ERROR_MESSAGE);
-      }
+        String ts = TS_FMT.format(LocalDateTime.now());
+
+        File out = new File(VEHICLES_CSV);
+        boolean writeHeader = !out.exists() || out.length() == 0;
+
+        try (FileWriter fw = new FileWriter(out, true)) {
+            if (writeHeader) {
+                fw.write("timestamp,owner_id,license,state,make,model,year,departure_schedule\n");
+            }
+            String line = String.join(",",
+                    escape(ts),
+                    escape(ownerEnteredId), 
+                    escape(vehicle.getVehicleID()),             // license plate
+                    escape(vehicle.getLicenseState()),          // state
+                    escape(vehicle.getMake()),                  // make
+                    escape(vehicle.getModel()),                 // model
+                    escape(String.valueOf(vehicle.getYear())),
+                    escape(vehicle.getDepartureSchedule().toString()) // ISO datetime
+            );
+            fw.write(line + "\n");
+            logToFile("vehicles.csv: appended " + vehicle.getVehicleID());
+        } catch (IOException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(this, "Error writing vehicles.csv: " + ex.getMessage(), "I/O Error", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private static String escape(String s) {
@@ -546,7 +551,7 @@ public class VCControllerGUI extends JPanel {
         return v;
     }
 
-    // ============== PERSISTENT NOTIFICATION METHODS ==============
+    //  PERSISTENT NOTIFICATION METHODS 
 
     /** Saves notifications to a file for persistence across sessions. */
     private void saveNotifications() {
@@ -579,10 +584,10 @@ public class VCControllerGUI extends JPanel {
         }
     }
 
-    // ============== BUTTON RENDERER AND EDITOR (ICONS ONLY) ==============
+    // BUTTON RENDERER AND EDITOR (ICONS) 
 
     /**
-     * Renders Accept/Reject buttons stacked vertically with icons only (✓ / ✗).
+     * Renders Accept/Reject buttons with icons (✓ / ✗).
      */
     class ButtonRenderer extends JPanel implements TableCellRenderer {
         private JButton acceptButton;
@@ -607,129 +612,165 @@ public class VCControllerGUI extends JPanel {
         }
     }
 
-    /**
-     * Handles button clicks in table cells (icons only + tooltips).
-     * Also performs CSV writes *only* on acceptance.
-     */
-    class ButtonEditor extends DefaultCellEditor {
-        private JPanel panel;
-        private JButton acceptButton;
-        private JButton rejectButton;
-        private String requestID;
+  /**
+ * Handles button clicks in table cells (icons only + tooltips).
+ * Also performs CSV writes *only* on acceptance.
+ * Ensures notifications are ALWAYS queued and persisted immediately.
+ */
+class ButtonEditor extends DefaultCellEditor {
+    private JPanel panel;
+    private JButton acceptButton;
+    private JButton rejectButton;
+    private String requestID;
 
-        public ButtonEditor(JCheckBox checkBox) {
-            super(checkBox);
+    public ButtonEditor(JCheckBox checkBox) {
+        super(checkBox);
 
-            panel = new JPanel();
-            panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-            panel.setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
+        panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
 
-            acceptButton = makeIconButton("✓", "Accept request");
-            rejectButton = makeIconButton("✗", "Reject request");
+        acceptButton = makeIconButton("✓", "Accept request");
+        rejectButton = makeIconButton("✗", "Reject request");
 
-            acceptButton.addActionListener(e -> {
-                handleAccept();
-                fireEditingStopped();
-            });
+        acceptButton.addActionListener(e -> {
+            handleAccept();
+            fireEditingStopped();
+        });
 
-            rejectButton.addActionListener(e -> {
-                handleReject();
-                fireEditingStopped();
-            });
+        rejectButton.addActionListener(e -> {
+            handleReject();
+            fireEditingStopped();
+        });
 
-            panel.add(acceptButton);
-            panel.add(Box.createVerticalStrut(5));
-            panel.add(rejectButton);
-        }
-
-        @Override
-        public Component getTableCellEditorComponent(JTable table, Object value,
-                                                     boolean isSelected, int row, int column) {
-            this.requestID = (String) value;
-            return panel;
-        }
-
-        @Override
-        public Object getCellEditorValue() {
-            return requestID;
-        }
-
-        private void handleAccept() {
-            Request req = server.getRequest(requestID);
-            if (req == null) return;
-
-            String senderId = req.getSenderID(); // User's login ID
-
-            if (req.getRequestType().equals("JOB_SUBMISSION")) {
-                // Approve in controller/server (adds job to queue)
-                controller.approveJobSubmission(requestID);
-
-                // CSV WRITE: only on accept
-                Job job = (Job) req.getData();
-                
-                // FIX: Extract the Client ID (prefix of job ID) for CSV storage
-                String clientEnteredID = job.getJobID().split("-")[0];
-                appendApprovedJobToCSV(job, clientEnteredID);
-
-                // Notify user
-                server.notifyUser(senderId, "Your job " + job.getJobID() + " has been APPROVED and added to the queue.");
-                addNotification("Job " + job.getJobID() + " APPROVED and stored to jobs.csv");
-                logToFile("Job " + job.getJobID() + " approved and stored (jobs.csv)");
-
-            } else if (req.getRequestType().equals("VEHICLE_REGISTRATION")) {
-                controller.approveVehicleRegistration(requestID);
-
-                // CSV WRITE: only on accept
-                Vehicle vehicle = (Vehicle) req.getData();
-                // FIX: Pass the loginId (senderId) to the CSV method, which will look up the entered OwnerID
-                appendApprovedVehicleToCSV(vehicle, senderId); 
-
-                // Notify user
-                server.notifyUser(senderId, "Your vehicle " + vehicle.getVehicleID() + " has been APPROVED and registered.");
-                addNotification("Vehicle " + vehicle.getVehicleID() + " APPROVED and stored to vehicles.csv");
-                logToFile("Vehicle " + vehicle.getVehicleID() + " approved and stored (vehicles.csv)");
-            }
-
-            // Refresh list so the processed item disappears (status no longer Pending)
-            refreshPendingRequests();
-        }
-
-        private void handleReject() {
-            Request req = server.getRequest(requestID);
-            if (req == null) return;
-
-            String senderId = req.getSenderID();
-
-            if (req.getRequestType().equals("JOB_SUBMISSION")) {
-                controller.rejectJobSubmission(requestID);
-                Job job = (Job) req.getData();
-
-                // NO CSV WRITE on reject
-                server.notifyUser(senderId, "Your job request " + job.getJobID() + " has been REJECTED.");
-                addNotification("Job request " + job.getJobID() + " REJECTED - not stored");
-                logToFile("Job request " + job.getJobID() + " rejected (no CSV write)");
-
-            } else if (req.getRequestType().equals("VEHICLE_REGISTRATION")) {
-                controller.rejectVehicleRegistration(requestID);
-                Vehicle vehicle = (Vehicle) req.getData();
-
-                // NO CSV WRITE on reject
-                server.notifyUser(senderId, "Your vehicle registration " + vehicle.getVehicleID() + " has been REJECTED.");
-                addNotification("Vehicle " + vehicle.getVehicleID() + " REJECTED - not stored");
-                logToFile("Vehicle " + vehicle.getVehicleID() + " rejected (no CSV write)");
-            }
-
-            refreshPendingRequests();
-        }
+        panel.add(acceptButton);
+        panel.add(Box.createVerticalStrut(5));
+        panel.add(rejectButton);
     }
 
-    // ============== UTIL: ICON-ONLY BUTTON FACTORY ==============
+    @Override
+    public Component getTableCellEditorComponent(JTable table, Object value,
+                                                 boolean isSelected, int row, int column) {
+        this.requestID = (String) value;
+        return panel;
+    }
+
+    @Override
+    public Object getCellEditorValue() {
+        return requestID;
+    }
+
+    // 
+    private synchronized void handleAccept() {
+        Request req = server.getRequest(requestID);
+        if (req == null) {
+            System.err.println("VCController: Request not found: " + requestID);
+            return;
+        }
+
+        String senderId = req.getSenderID(); // User's login ID
+
+        if (req.getRequestType().equals("JOB_SUBMISSION")) {
+            Job job = (Job) req.getData();
+            
+            // Build notification message
+            String notificationMsg = "Your job " + job.getJobID() + " has been APPROVED and added to the queue.";
+            
+            // Send notification 
+            server.notifyUser(senderId, notificationMsg);
+            
+            // Approve in controller/server (adds job to queue)
+            controller.approveJobSubmission(requestID);
+
+            // CSV WRITE: only on accept
+            String clientEnteredID = server.getClientIDForJob(job);
+            if (clientEnteredID == null) {
+                String id = job.getJobID();
+                int dash = id.indexOf('-');
+                clientEnteredID = (dash > 0) ? id.substring(0, dash) : id;
+            }
+            appendApprovedJobToCSV(job, clientEnteredID);
+            
+            addNotification("Job " + job.getJobID() + " APPROVED and stored to jobs.csv");
+            logToFile("Job " + job.getJobID() + " approved and stored (jobs.csv)");
+
+        } else if (req.getRequestType().equals("VEHICLE_REGISTRATION")) {
+            Vehicle vehicle = (Vehicle) req.getData();
+            
+            // Build notification message
+            String notificationMsg = "Your vehicle " + vehicle.getVehicleID() + " has been APPROVED and registered.";
+            
+            // Send notification 
+            server.notifyUser(senderId, notificationMsg);
+            
+            // Approve in controller/server (recruits vehicle)
+            controller.approveVehicleRegistration(requestID);
+
+            // CSV WRITE: only on accept
+            appendApprovedVehicleToCSV(vehicle, senderId);
+            
+            addNotification("Vehicle " + vehicle.getVehicleID() + " APPROVED and stored to vehicles.csv");
+            logToFile("Vehicle " + vehicle.getVehicleID() + " approved and stored (vehicles.csv)");
+        }
+
+        // Refresh list so the processed item disappears
+        refreshPendingRequests();
+    }
+
+    private synchronized void handleReject() {
+        Request req = server.getRequest(requestID);
+        if (req == null) {
+            System.err.println("VCController: Request not found: " + requestID);
+            return;
+        }
+
+        String senderId = req.getSenderID();
+
+        if (req.getRequestType().equals("JOB_SUBMISSION")) {
+            Job job = (Job) req.getData();
+            
+            // Build notification message
+            String notificationMsg = "Your job request " + job.getJobID() + " has been REJECTED.";
+            
+            // Send notification 
+            server.notifyUser(senderId, notificationMsg);
+            
+            // Reject in controller/server (removes from server's pending map)
+            controller.rejectJobSubmission(requestID);
+
+            // NO CSV WRITE on reject
+            addNotification("Job request " + job.getJobID() + " REJECTED - not stored");
+            logToFile("Job request " + job.getJobID() + " rejected (no CSV write)");
+
+        } else if (req.getRequestType().equals("VEHICLE_REGISTRATION")) {
+            Vehicle vehicle = (Vehicle) req.getData();
+            
+            // Build notification message
+            String notificationMsg = "Your vehicle registration " + vehicle.getVehicleID() + " has been REJECTED.";
+            
+            // Send notification 
+            server.notifyUser(senderId, notificationMsg);
+            
+            // Reject in controller/server (removes from server's pending map)
+            controller.rejectVehicleRegistration(requestID);
+
+            // NO CSV WRITE on reject
+            addNotification("Vehicle " + vehicle.getVehicleID() + " REJECTED - not stored");
+            logToFile("Vehicle " + vehicle.getVehicleID() + " rejected (no CSV write)");
+        }
+
+        // Refresh list so the processed item disappears
+        refreshPendingRequests();
+    }
+}
+
+    //  UTIL: ICON-ONLY BUTTON FACTORY 
 
     private static JButton makeIconButton(String glyph, String tooltip) {
         JButton b = new JButton(glyph);
         b.setToolTipText(tooltip);
         b.setFocusPainted(false);
-        b.setFont(new Font("SansSerif", Font.BOLD, 18)); // bigger glyph
+        b.setFont(new Font("SansSerif", Font.BOLD, 18)); 
         b.setForeground(Color.BLUE);
         b.setBackground("✓".equals(glyph) ? new Color(76, 175, 80) : new Color(244, 67, 54));
         b.setAlignmentX(Component.CENTER_ALIGNMENT);

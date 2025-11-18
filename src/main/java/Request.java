@@ -1,4 +1,4 @@
-import java.io.Serializable; // Import added
+import java.io.Serializable; 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -6,8 +6,8 @@ import java.time.format.DateTimeFormatter;
  * Represents a request from a Client or Vehicle Owner to the VC Controller.
  * Includes acknowledgment and decision tracking.
  */
-public class Request implements Serializable { // ADDED Serializable
-    private static final long serialVersionUID = 1L; // ADDED SerialVersionUID
+public class Request implements Serializable { 
+    private static final long serialVersionUID = 1L; // SerialVersionUID
     
     private final String requestID;
     private final String senderID;

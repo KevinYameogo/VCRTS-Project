@@ -15,7 +15,7 @@ public class Main {
         Thread serverThread = new Thread(networkServer);
         serverThread.start(); 
         
-        // FIX: Create and start the Notification Push Server (listens for GUI clients)
+        // Create and start the Notification Push Server (listens for GUI clients)
         NetworkNotificationServer notificationServer = new NetworkNotificationServer(NOTIFICATION_PORT, storageServer);
         Thread notificationThread = new Thread(notificationServer);
         notificationThread.start(); 

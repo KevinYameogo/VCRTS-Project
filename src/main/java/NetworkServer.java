@@ -50,6 +50,7 @@ public class NetworkServer implements Runnable {
     public void stop() {
         this.isRunning = false;
         //might need to add code to interrupt the serverSocket.accept() call
+        //for now, no needed
     }
 }
 

@@ -113,7 +113,7 @@ public class LandingPage extends JFrame {
         passwordField.setAlignmentX(Component.CENTER_ALIGNMENT);
         loginPanel.add(passwordField);
 
-        // NEW: Panel for login button and Generate Pass button
+        // Panel for login button and Generate Pass button
         JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
         buttonRow.setOpaque(false);
         JButton loginButton = new JButton("Login");
@@ -167,7 +167,7 @@ public class LandingPage extends JFrame {
                         roleComboBox.setSelectedIndex(0);
                         infoLabel.setText("Choose your role to continue.");
                     };
-                    // FIX: Pass the server instance from controller
+                    // Pass the server instance from controller
                     VCControllerGUI vcControllerPanel = new VCControllerGUI(
                         this.controller, 
                         this.controller.getServer(),  // Changed from null to actual server
@@ -184,7 +184,7 @@ public class LandingPage extends JFrame {
             tempPassDisplayArea.setBackground(new Color(240, 248, 255));
         });
 
-        //Generate Pass Action
+        //Generate Password Action
         generatePassButton.addActionListener(e -> generateAndStoreTempPass());
 
         

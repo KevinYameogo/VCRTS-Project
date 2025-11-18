@@ -14,7 +14,7 @@ public class NetworkNotificationServer implements Runnable {
     private Server server;
     private boolean isRunning;
 
-    // NOTE: This port must match the NOTIFICATION_PORT used in ClientGUI/OwnerGUI (12346)
+    // This port matches(should match) the NOTIFICATION_PORT used in ClientGUI/OwnerGUI 
     public NetworkNotificationServer(int port, Server server) {
         this.port = port;
         this.server = server;
@@ -51,6 +51,7 @@ public class NetworkNotificationServer implements Runnable {
 
 /**
  * Handles a single persistent notification socket connection.
+ * Object streams are created in the correct order (OOS first, then OIS)
  */
 class NotificationHandler implements Runnable {
 
@@ -65,14 +66,19 @@ class NotificationHandler implements Runnable {
 
     @Override
     public void run() {
-        try (
-            ObjectInputStream ois = new ObjectInputStream(clientSocket.getInputStream());
-            ObjectOutputStream oos = new ObjectOutputStream(clientSocket.getOutputStream())
-        ) {
+        ObjectOutputStream oos = null;
+        ObjectInputStream ois = null;
+
+        try {
+            // Create ObjectOutputStream FIRST, flush header, THEN ObjectInputStream.
+            oos = new ObjectOutputStream(clientSocket.getOutputStream());
+            oos.flush(); 
+            ois = new ObjectInputStream(clientSocket.getInputStream());
+
             // STEP 1: Receive UserID for registration
             Object receivedID = ois.readObject();
             if (!(receivedID instanceof String)) {
-                return; 
+                return;
             }
             this.userID = (String) receivedID;
             System.out.println("Notification Handler: Received login from " + userID);
@@ -81,21 +87,30 @@ class NotificationHandler implements Runnable {
             server.registerNotificationClient(userID, oos);
 
             // STEP 3: Keep the thread alive, waiting for the connection to be closed by the client/server
-            // The OIS is kept open by the outer try-with-resources, and the thread blocks here.
-            // Any further object reads would be from the client (not expected in this push model).
             while (!clientSocket.isClosed()) {
-                // Wait passively; the server pushes data via the registered OOS
-                Thread.sleep(1000); 
+                // Just sleep; server pushes notifications via the registered ObjectOutputStream
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ie) {
+                    System.out.println("Notification Handler for " + userID + " interrupted.");
+                    break;
+                }
             }
 
         } catch (IOException | ClassNotFoundException e) {
-            // Normal behavior on client disconnect/interrupt
-            System.out.println("Notification Handler for " + userID + " disconnected.");
-        } catch (InterruptedException e) {
-            System.out.println("Notification Handler for " + userID + " interrupted.");
+            System.out.println("Notification Handler for " + userID + " disconnected: " + e.getMessage());
         } finally {
             // Deregister and clean up
             server.deregisterNotificationClient(this.userID);
+            try {
+                if (ois != null) ois.close();
+            } catch (IOException ignored) {}
+            try {
+                if (oos != null) oos.close();
+            } catch (IOException ignored) {}
+            try {
+                if (clientSocket != null && !clientSocket.isClosed()) clientSocket.close();
+            } catch (IOException ignored) {}
         }
     }
 }

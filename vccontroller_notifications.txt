@@ -1,0 +1,16 @@
+[2025-11-19 14:27:18] Server started successfully.
+[2025-11-19 14:28:54] Job 123456-142641-451 approved and added to queue
+[2025-11-19 14:28:54] Job 123456-142641-451 APPROVED and stored to jobs.csv
+[2025-11-19 14:31:03] Job request received from jacob
+[2025-11-19 14:31:36] Server started successfully.
+[2025-11-19 14:31:44] Job request REQ-2 rejected
+[2025-11-19 14:31:44] Job request 246824-143103-676 REJECTED - not stored
+[2025-11-19 14:35:13] Vehicle registration received from lior
+[2025-11-19 14:35:39] Server started successfully.
+[2025-11-19 14:35:48] Vehicle 123456 approved and recruited
+[2025-11-19 14:35:48] Vehicle 123456 APPROVED and stored to vehicles.csv
+[2025-11-19 14:37:29] Vehicle registration received from lior
+[2025-11-19 14:37:47] Server started successfully.
+[2025-11-19 14:37:52] Vehicle request REQ-4 rejected
+[2025-11-19 14:37:52] Vehicle 1234567 REJECTED - not stored
+[2025-11-19 15:04:45] Server started successfully.

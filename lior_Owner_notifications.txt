@@ -1,0 +1,4 @@
+[2025-11-19 14:35:18] Vehicle registration request for 123456 submitted and acknowledged by server
+[2025-11-19 14:35:48] Your vehicle 123456 has been APPROVED and registered.
+[2025-11-19 14:37:38] Vehicle registration request for 1234567 submitted and acknowledged by server
+[2025-11-19 14:37:52] Your vehicle registration 1234567 has been REJECTED.

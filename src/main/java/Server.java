@@ -296,16 +296,7 @@ public class Server implements Serializable {
     }
 
     //
-    public synchronized void storeCompletedJob(Job job) {
-        if (job != null) {
-            storageArchive.add(job);
-            saveState();
-            // Update in Database
-            String loginID = getLoginIDForJob(job);
-            DatabaseManager.getInstance().saveJob(job, loginID);
-            System.out.println("Server: Stored completed job " + job.getJobID() + " to DB.");
-        }
-    }
+
 
     public synchronized Job retrieveJob(String jobID) {
         if (jobID == null) {
@@ -453,8 +444,12 @@ public class Server implements Serializable {
             registeredVehicles.add(vehicle);
             saveState();
             // Save to Database
-            String ownerID = getOwnerIDForVehicle(vehicle);
-            DatabaseManager.getInstance().saveVehicle(vehicle, ownerID);
+            String ownerEnteredID = getVehicleOwnerIDForDisplay(vehicle);
+            if (ownerEnteredID == null) ownerEnteredID = "UNKNOWN"; // Fallback
+            
+            String username = getOwnerIDForVehicle(vehicle); // This is the login ID (FK)
+            
+            DatabaseManager.getInstance().saveVehicle(vehicle, ownerEnteredID, username);
             System.out.println("Server: Stored registered vehicle " + vehicle.getVehicleID() + " to DB.");
         }
     }
@@ -470,12 +465,12 @@ public class Server implements Serializable {
             approvedJobs.add(job);
             saveState();
             // Save to Database
-            String clientID = getClientIDForJob(job); // Use user-entered ID or login ID?
-            // getClientIDForJob returns user-entered ID. getLoginIDForJob returns login ID.
-            // DatabaseManager expects client_id (FK to users). Users table uses login ID (username).
-            // So we MUST use getLoginIDForJob(job).
-            String loginID = getLoginIDForJob(job);
-            DatabaseManager.getInstance().saveJob(job, loginID);
+            String clientEnteredID = getClientIDForJob(job); 
+            if (clientEnteredID == null) clientEnteredID = "UNKNOWN"; // Fallback
+            
+            String username = getLoginIDForJob(job); // This is the login ID (FK)
+            
+            DatabaseManager.getInstance().saveJob(job, clientEnteredID, username);
             System.out.println("Server: Stored approved job " + job.getJobID() + " to DB.");
         }
     }
@@ -484,5 +479,20 @@ public class Server implements Serializable {
     public synchronized List<Job> getAllApprovedJobs() {
         return new ArrayList<>(approvedJobs);
     }
-}
     
+    // Store completed job:
+    public synchronized void storeCompletedJob(Job job) {
+        if (job != null) {
+            storageArchive.add(job);
+            saveState();
+            // Update in Database
+            String clientEnteredID = getClientIDForJob(job);
+            if (clientEnteredID == null) clientEnteredID = "UNKNOWN";
+            
+            String username = getLoginIDForJob(job);
+            
+            DatabaseManager.getInstance().saveJob(job, clientEnteredID, username);
+            System.out.println("Server: Stored completed job " + job.getJobID() + " to DB.");
+        }
+    }
+}

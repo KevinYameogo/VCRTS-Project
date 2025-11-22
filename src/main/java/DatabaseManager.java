@@ -55,6 +55,19 @@ public class DatabaseManager {
         }
     }
 
+    public void resetDatabase() {
+        if (connection == null) return;
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("DROP TABLE IF EXISTS jobs");
+            stmt.execute("DROP TABLE IF EXISTS vehicles");
+            stmt.execute("DROP TABLE IF EXISTS users");
+            System.out.println("Database reset (tables dropped).");
+            initializeDatabase(); // Re-create with new schema
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
     private void initializeDatabase() {
         if (connection == null) return;
 
@@ -65,31 +78,37 @@ public class DatabaseManager {
                     "name VARCHAR(100), " +
                     "password VARCHAR(255) NOT NULL, " +
                     "role VARCHAR(20) NOT NULL, " +
-                    "info VARCHAR(255))"; // Stores billingInfo or paymentInfo
+                    "info VARCHAR(255))"; 
             stmt.execute(createUsers);
 
             // Jobs Table
+            // client_id = Entered ID (from GUI)
+            // username = Actual User Account ID (FK)
             String createJobs = "CREATE TABLE IF NOT EXISTS jobs (" +
                     "job_id VARCHAR(50) PRIMARY KEY, " +
                     "client_id VARCHAR(50), " +
+                    "username VARCHAR(50), " + 
                     "duration INT, " +
                     "deadline VARCHAR(50), " +
                     "redundancy INT, " +
                     "status VARCHAR(50), " +
-                    "FOREIGN KEY (client_id) REFERENCES users(user_id))";
+                    "FOREIGN KEY (username) REFERENCES users(user_id))";
             stmt.execute(createJobs);
 
             // Vehicles Table
+            // owner_id = Entered ID (from GUI)
+            // username = Actual User Account ID (FK)
             String createVehicles = "CREATE TABLE IF NOT EXISTS vehicles (" +
                     "vehicle_id VARCHAR(50) PRIMARY KEY, " +
                     "owner_id VARCHAR(50), " +
+                    "username VARCHAR(50), " +
                     "license VARCHAR(20), " +
                     "state VARCHAR(20), " +
                     "make VARCHAR(50), " +
                     "model VARCHAR(50), " +
                     "year INT, " +
                     "departure_schedule VARCHAR(50), " +
-                    "FOREIGN KEY (owner_id) REFERENCES users(user_id))";
+                    "FOREIGN KEY (username) REFERENCES users(user_id))";
             stmt.execute(createVehicles);
 
             System.out.println("Database initialized (tables checked/created).");
@@ -149,7 +168,6 @@ public class DatabaseManager {
                 } else if (role.equalsIgnoreCase("Owner")) {
                     return new Owner(username, name, password, info);
                 } 
-                // Fallback for generic user if needed, though User is abstract
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -159,19 +177,20 @@ public class DatabaseManager {
 
     // --- Job Operations ---
 
-    public void saveJob(Job job, String clientId) {
+    public void saveJob(Job job, String clientEnteredId, String username) {
         if (connection == null) return;
-        String sql = "INSERT INTO jobs (job_id, client_id, duration, deadline, redundancy, status) " +
-                     "VALUES (?, ?, ?, ?, ?, ?) " +
+        String sql = "INSERT INTO jobs (job_id, client_id, username, duration, deadline, redundancy, status) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?) " +
                      "ON DUPLICATE KEY UPDATE status = ?";
         try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
             pstmt.setString(1, job.getJobID());
-            pstmt.setString(2, clientId);
-            pstmt.setInt(3, job.getDuration());
-            pstmt.setString(4, job.getDeadline().toString());
-            pstmt.setInt(5, job.getRedundancyLevel());
-            pstmt.setString(6, job.getStatus());
+            pstmt.setString(2, clientEnteredId);
+            pstmt.setString(3, username);
+            pstmt.setInt(4, job.getDuration());
+            pstmt.setString(5, job.getDeadline().toString());
+            pstmt.setInt(6, job.getRedundancyLevel());
             pstmt.setString(7, job.getStatus());
+            pstmt.setString(8, job.getStatus());
             pstmt.executeUpdate();
             System.out.println("Job saved to DB: " + job.getJobID());
         } catch (SQLException e) {
@@ -194,12 +213,13 @@ public class DatabaseManager {
         return "Job not found";
     }
 
-    public List<Job> getClientJobHistory(String clientId) {
+    public List<Job> getClientJobHistory(String username) {
         List<Job> jobs = new ArrayList<>();
         if (connection == null) return jobs;
-        String sql = "SELECT * FROM jobs WHERE client_id = ?";
+        // Filter by username (the account ID)
+        String sql = "SELECT * FROM jobs WHERE username = ?";
         try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
-            pstmt.setString(1, clientId);
+            pstmt.setString(1, username);
             ResultSet rs = pstmt.executeQuery();
             while (rs.next()) {
                 String jobId = rs.getString("job_id");
@@ -222,22 +242,23 @@ public class DatabaseManager {
 
     // --- Vehicle Operations ---
 
-    public void saveVehicle(Vehicle vehicle, String ownerId) {
+    public void saveVehicle(Vehicle vehicle, String ownerEnteredId, String username) {
         if (connection == null) return;
-        String sql = "INSERT INTO vehicles (vehicle_id, owner_id, license, state, make, model, year, departure_schedule) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+        String sql = "INSERT INTO vehicles (vehicle_id, owner_id, username, license, state, make, model, year, departure_schedule) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
                      "ON DUPLICATE KEY UPDATE departure_schedule = ?";
         try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
             pstmt.setString(1, vehicle.getVehicleID());
-            pstmt.setString(2, ownerId);
-            pstmt.setString(3, vehicle.getLicensePlate());
-            pstmt.setString(4, vehicle.getLicenseState());
-            pstmt.setString(5, vehicle.getMake());
-            pstmt.setString(6, vehicle.getModel());
-            pstmt.setInt(7, vehicle.getYear());
-            pstmt.setString(8, vehicle.getDepartureSchedule().toString());
-            
+            pstmt.setString(2, ownerEnteredId);
+            pstmt.setString(3, username);
+            pstmt.setString(4, vehicle.getLicensePlate());
+            pstmt.setString(5, vehicle.getLicenseState());
+            pstmt.setString(6, vehicle.getMake());
+            pstmt.setString(7, vehicle.getModel());
+            pstmt.setInt(8, vehicle.getYear());
             pstmt.setString(9, vehicle.getDepartureSchedule().toString());
+            
+            pstmt.setString(10, vehicle.getDepartureSchedule().toString());
             pstmt.executeUpdate();
             System.out.println("Vehicle saved to DB: " + vehicle.getVehicleID());
         } catch (SQLException e) {
@@ -245,12 +266,13 @@ public class DatabaseManager {
         }
     }
 
-    public List<Vehicle> getOwnerVehicleHistory(String ownerId) {
+    public List<Vehicle> getOwnerVehicleHistory(String username) {
         List<Vehicle> vehicles = new ArrayList<>();
         if (connection == null) return vehicles;
-        String sql = "SELECT * FROM vehicles WHERE owner_id = ?";
+        // Filter by username (the account ID)
+        String sql = "SELECT * FROM vehicles WHERE username = ?";
         try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
-            pstmt.setString(1, ownerId);
+            pstmt.setString(1, username);
             ResultSet rs = pstmt.executeQuery();
             while (rs.next()) {
                 String license = rs.getString("license");
@@ -262,8 +284,6 @@ public class DatabaseManager {
                 
                 LocalDateTime departure = LocalDateTime.parse(departureStr);
                 
-                // Vehicle constructor: vehicleID, make, model, year, licensePlate, state, departureSchedule
-                // Note: vehicleID is same as licensePlate in constructor
                 Vehicle vehicle = new Vehicle(license, make, model, year, license, state, departure);
                 vehicles.add(vehicle);
             }

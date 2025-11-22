@@ -14,3 +14,16 @@
 [2025-11-19 14:37:52] Vehicle request REQ-4 rejected
 [2025-11-19 14:37:52] Vehicle 1234567 REJECTED - not stored
 [2025-11-19 15:04:45] Server started successfully.
+[2025-11-21 18:36:51] Server started successfully.
+[2025-11-21 18:37:15] Vehicle request REQ-10 rejected
+[2025-11-21 18:37:15] Vehicle KKS22O2 REJECTED - not stored
+[2025-11-21 18:37:17] Job request REQ-5 rejected
+[2025-11-21 18:37:17] Job request wwe22i-150431-292 REJECTED - not stored
+[2025-11-21 18:37:18] Job request REQ-6 rejected
+[2025-11-21 18:37:18] Job request 299399-182550-654 REJECTED - not stored
+[2025-11-21 18:37:19] Job request REQ-7 rejected
+[2025-11-21 18:37:19] Job request 202002-182607-105 REJECTED - not stored
+[2025-11-21 18:37:20] Job request REQ-8 rejected
+[2025-11-21 18:37:20] Job request 010102-182753-539 REJECTED - not stored
+[2025-11-21 18:37:21] Vehicle request REQ-9 rejected
+[2025-11-21 18:37:21] Vehicle JDKS293 REJECTED - not stored

@@ -138,7 +138,7 @@ public class OwnerGUI extends JPanel {
     // --- Notification Client (Persistent Across Sessions) ---
 
     /**
-     * Starts a dedicated thread to connect to the NetworkNotificationServer 
+     * Starts a dedicated thread to connect to the NetworkServer 
      * and listen for pushed messages. Thread persists even after GUI logout.
      */
     private void startNotificationClient() {
@@ -162,7 +162,7 @@ public class OwnerGUI extends JPanel {
         // Create new notification client
         backgroundNotificationClient = new NotificationClient(
             "127.0.0.1", 
-            Main.NOTIFICATION_PORT, 
+            Main.SERVER_PORT, 
             ownerUser.getUserID(),
             this::addNotification
         );

@@ -1,13 +1,9 @@
 import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
-import javax.swing.table.TableCellEditor;
-import javax.swing.table.TableCellRenderer;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.io.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
 
 /**
  * VCControllerGUI with request approval/rejection functionality.
@@ -19,8 +15,6 @@ public class VCControllerGUI extends JPanel {
     private Runnable onBack;
 
     private JLabel statusLabel;
-    private DefaultTableModel requestTableModel;
-    private JTable requestTable;
     private DefaultListModel<String> notificationListModel;
     private JList<String> notificationList;
     private JTextArea fileLogArea;
@@ -180,63 +174,56 @@ public class VCControllerGUI extends JPanel {
         panel.setBackground(Color.WHITE);
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(new Color(220, 220, 220), 1),
-                BorderFactory.createEmptyBorder(10, 10, 10, 10)
+                BorderFactory.createEmptyBorder(20, 20, 20, 20)
         ));
 
-        JLabel titleLabel = new JLabel("Pending Requests");
+        JLabel titleLabel = new JLabel("Pending Requests", SwingConstants.CENTER);
         titleLabel.setFont(new Font("SansSerif", Font.BOLD, 18));
         panel.add(titleLabel, BorderLayout.NORTH);
 
-        requestTableModel = new DefaultTableModel(
-                new Object[]{"Request ID", "Sender", "Type", "Timestamp", "Actions"}, 0
-        ) {
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return column == 4; 
-            }
-        };
+        // Center content
+        JPanel centerPanel = new JPanel(new GridBagLayout());
+        centerPanel.setOpaque(false);
+        
+        JLabel infoLabel = new JLabel("<html><center>Manage incoming Job and Vehicle requests.<br>Click below to view details.</center></html>", SwingConstants.CENTER);
+        infoLabel.setFont(new Font("SansSerif", Font.PLAIN, 14));
+        infoLabel.setForeground(Color.GRAY);
+        
+        JButton viewRequestsBtn = new JButton("View Pending Requests");
+        viewRequestsBtn.setFont(new Font("SansSerif", Font.BOLD, 16));
+        viewRequestsBtn.setBackground(Color.WHITE);
+        viewRequestsBtn.setForeground(Color.BLACK);
+        viewRequestsBtn.setFocusPainted(false);
+        viewRequestsBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        viewRequestsBtn.setPreferredSize(new Dimension(220, 50));
+        
+        viewRequestsBtn.addActionListener(e -> {
+            SwingUtilities.invokeLater(() -> {
+                new RequestsFrame(server, this).setVisible(true);
+            });
+        });
 
-        requestTable = new JTable(requestTableModel);
-        requestTable.setRowHeight(80); 
-        requestTable.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = 0; gbc.gridy = 0;
+        gbc.insets = new Insets(0, 0, 20, 0);
+        centerPanel.add(infoLabel, gbc);
+        
+        gbc.gridy = 1;
+        centerPanel.add(viewRequestsBtn, gbc);
 
-        requestTable.getColumn("Actions").setCellRenderer(new ButtonRenderer());
-        requestTable.getColumn("Actions").setCellEditor(new ButtonEditor(new JCheckBox()));
-
-        JScrollPane scrollPane = new JScrollPane(requestTable);
-        panel.add(scrollPane, BorderLayout.CENTER);
-
-        // Manual refresh
-        JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        bottomPanel.setOpaque(false);
-        JButton refreshBtn = new JButton("Refresh Requests");
-        refreshBtn.addActionListener(e -> refreshPendingRequests());
-        bottomPanel.add(refreshBtn);
-        panel.add(bottomPanel, BorderLayout.SOUTH);
+        panel.add(centerPanel, BorderLayout.CENTER);
 
         return panel;
     }
 
     /**
-     * Refreshes the pending requests table from the server.
-     * Ensures the server state is reloaded from disk first for multi-instance sync.
+     * Refreshes the pending requests - No longer updates a local table here.
+     * Kept for timer compatibility or background checks if needed.
      */
     private void refreshPendingRequests() {
         // Reload server state to ensure we see approvals/rejections made in other instances.
         server.reloadState();
-
-        SwingUtilities.invokeLater(() -> {
-            requestTableModel.setRowCount(0);
-            for (Request req : server.getPendingRequests()) {
-                requestTableModel.addRow(new Object[]{
-                        req.getRequestID(),
-                        req.getSenderID(),
-                        req.getRequestType(),
-                        req.getTimestamp().format(TS_FMT),
-                        req.getRequestID() 
-                });
-            }
-        });
+        // Logic moved to RequestsFrame
     }
 
     private JPanel createNotificationsPanel() {
@@ -584,84 +571,9 @@ public class VCControllerGUI extends JPanel {
         }
     }
 
-    // BUTTON RENDERER AND EDITOR (ICONS) 
+    // PUBLIC METHODS FOR ACTION HANDLING (Called by RequestsFrame)
 
-    /**
-     * Renders Accept/Reject buttons with icons (✓ / ✗).
-     */
-    class ButtonRenderer extends JPanel implements TableCellRenderer {
-        private JButton acceptButton;
-        private JButton rejectButton;
-
-        public ButtonRenderer() {
-            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
-            setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
-
-            acceptButton = makeIconButton("✔️", "Accept request");
-            rejectButton = makeIconButton("x", "Reject request");
-
-            add(acceptButton);
-            add(Box.createVerticalStrut(5));
-            add(rejectButton);
-        }
-
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                                                       boolean isSelected, boolean hasFocus, int row, int column) {
-            return this;
-        }
-    }
-
-  /**
- * Handles button clicks in table cells (icons only + tooltips).
- * Also performs CSV writes *only* on acceptance.
- * Ensures notifications are ALWAYS queued and persisted immediately.
- */
-class ButtonEditor extends DefaultCellEditor {
-    private JPanel panel;
-    private JButton acceptButton;
-    private JButton rejectButton;
-    private String requestID;
-
-    public ButtonEditor(JCheckBox checkBox) {
-        super(checkBox);
-
-        panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createEmptyBorder(2, 5, 2, 5));
-
-        acceptButton = makeIconButton("✓", "Accept request");
-        rejectButton = makeIconButton("✗", "Reject request");
-
-        acceptButton.addActionListener(e -> {
-            handleAccept();
-            fireEditingStopped();
-        });
-
-        rejectButton.addActionListener(e -> {
-            handleReject();
-            fireEditingStopped();
-        });
-
-        panel.add(acceptButton);
-        panel.add(Box.createVerticalStrut(5));
-        panel.add(rejectButton);
-    }
-
-    @Override
-    public Component getTableCellEditorComponent(JTable table, Object value,
-                                                 boolean isSelected, int row, int column) {
-        this.requestID = (String) value;
-        return panel;
-    }
-
-    @Override
-    public Object getCellEditorValue() {
-        return requestID;
-    }
-
-    // 
-    private synchronized void handleAccept() {
+    public synchronized void handleAccept(String requestID) {
         Request req = server.getRequest(requestID);
         if (req == null) {
             System.err.println("VCController: Request not found: " + requestID);
@@ -717,7 +629,7 @@ class ButtonEditor extends DefaultCellEditor {
         refreshPendingRequests();
     }
 
-    private synchronized void handleReject() {
+    public synchronized void handleReject(String requestID) {
         Request req = server.getRequest(requestID);
         if (req == null) {
             System.err.println("VCController: Request not found: " + requestID);
@@ -761,21 +673,5 @@ class ButtonEditor extends DefaultCellEditor {
 
         // Refresh list so the processed item disappears
         refreshPendingRequests();
-    }
-}
-
-    //  UTIL: ICON-ONLY BUTTON FACTORY 
-
-    private static JButton makeIconButton(String glyph, String tooltip) {
-        JButton b = new JButton(glyph);
-        b.setToolTipText(tooltip);
-        b.setFocusPainted(false);
-        b.setFont(new Font("SansSerif", Font.BOLD, 18)); 
-        b.setForeground(Color.BLUE);
-        b.setBackground("✓".equals(glyph) ? new Color(76, 175, 80) : new Color(244, 67, 54));
-        b.setAlignmentX(Component.CENTER_ALIGNMENT);
-        b.setMaximumSize(new Dimension(100, 32));
-        b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        return b;
     }
 }

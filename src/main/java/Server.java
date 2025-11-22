@@ -300,7 +300,10 @@ public class Server implements Serializable {
         if (job != null) {
             storageArchive.add(job);
             saveState();
-            System.out.println("Server: Stored completed job " + job.getJobID());
+            // Update in Database
+            String loginID = getLoginIDForJob(job);
+            DatabaseManager.getInstance().saveJob(job, loginID);
+            System.out.println("Server: Stored completed job " + job.getJobID() + " to DB.");
         }
     }
 
@@ -449,7 +452,10 @@ public class Server implements Serializable {
         if (vehicle != null && !registeredVehicles.contains(vehicle)) {
             registeredVehicles.add(vehicle);
             saveState();
-            System.out.println("Server: Stored registered vehicle " + vehicle.getVehicleID());
+            // Save to Database
+            String ownerID = getOwnerIDForVehicle(vehicle);
+            DatabaseManager.getInstance().saveVehicle(vehicle, ownerID);
+            System.out.println("Server: Stored registered vehicle " + vehicle.getVehicleID() + " to DB.");
         }
     }
 
@@ -463,7 +469,14 @@ public class Server implements Serializable {
         if (job != null && !approvedJobs.contains(job)) {
             approvedJobs.add(job);
             saveState();
-            System.out.println("Server: Stored approved job " + job.getJobID());
+            // Save to Database
+            String clientID = getClientIDForJob(job); // Use user-entered ID or login ID?
+            // getClientIDForJob returns user-entered ID. getLoginIDForJob returns login ID.
+            // DatabaseManager expects client_id (FK to users). Users table uses login ID (username).
+            // So we MUST use getLoginIDForJob(job).
+            String loginID = getLoginIDForJob(job);
+            DatabaseManager.getInstance().saveJob(job, loginID);
+            System.out.println("Server: Stored approved job " + job.getJobID() + " to DB.");
         }
     }
 
@@ -472,3 +485,4 @@ public class Server implements Serializable {
         return new ArrayList<>(approvedJobs);
     }
 }
+    

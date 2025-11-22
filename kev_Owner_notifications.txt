@@ -1,4 +1,0 @@
-[2025-11-21 18:34:31] Vehicle registration request for JDKS293 submitted and acknowledged by server
-[2025-11-21 18:36:40] Vehicle registration request for KKS22O2 submitted and acknowledged by server
-[2025-11-21 18:37:15] Your vehicle registration KKS22O2 has been REJECTED.
-[2025-11-21 18:37:21] Your vehicle registration JDKS293 has been REJECTED.

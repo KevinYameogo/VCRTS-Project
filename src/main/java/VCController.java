@@ -442,7 +442,7 @@ public class VCController implements Serializable {
 
 
     public synchronized String getJobStatus(String jobID){
-      // First check local controller lists
+      // First check local controller lists (active/pending)
       String localStatus = Stream.of(pendingJobs, inProgressJobs, archivedJobs)
           .flatMap(List::stream)
           .filter(job -> job.getJobID().equals(jobID))
@@ -454,23 +454,8 @@ public class VCController implements Serializable {
           return localStatus; 
       }
       
-      // If not found locally, check server's approved jobs list
-      systemServer.reloadState(); // Get latest server state
-      List<Job> approvedJobs = systemServer.getAllApprovedJobs();
-      
-      for (Job job : approvedJobs) {
-          if (job.getJobID().equals(jobID)) {
-              return job.getStatus();
-          }
-      }
-      
-      // Also check completed jobs in server's storage archive
-      Job completedJob = systemServer.retrieveJob(jobID);
-      if (completedJob != null) {
-          return completedJob.getStatus();
-      }
-      
-      return "Job not found";
+      // Check Database
+      return DatabaseManager.getInstance().getJobStatus(jobID);
   }
 
   public String calculateCompletionTimes(){
@@ -497,11 +482,30 @@ public class VCController implements Serializable {
 
   public synchronized boolean isVehicleInSystem(String license, String state) {
     String signature = license + state;
+    
+    // Check available and active vehicles
     boolean inAvailable = availableVehicles.stream()
             .anyMatch(vehicle -> vehicle.getSignature().equals(signature));
     if (inAvailable) return true;
-    return activeVehicles.stream()
+    
+    boolean inActive = activeVehicles.stream()
             .anyMatch(vehicle -> vehicle.getSignature().equals(signature));
+    if (inActive) return true;
+
+    // Check pending requests in the server
+    if (systemServer != null) {
+        List<Request> pendingRequests = systemServer.getPendingRequests();
+        for (Request req : pendingRequests) {
+            if (req.getRequestType().equals("VEHICLE_REGISTRATION") && req.getData() instanceof Vehicle) {
+                Vehicle v = (Vehicle) req.getData();
+                if (v.getSignature().equals(signature)) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
   }
   
   /**
@@ -511,20 +515,7 @@ public class VCController implements Serializable {
    * @return List<Vehicle> A list of vehicles registered by the owner.
    */
   public synchronized List<Vehicle> getOwnerVehicleHistory(String ownerID) {
-      systemServer.reloadState();
-
-      // Get all registered vehicles from the server's persistent storage
-      List<Vehicle> allVehicles = systemServer.getAllRegisteredVehicles();
-      
-      List<Vehicle> ownerHistory = new ArrayList<>();
-      
-      for (Vehicle vehicle : allVehicles) {
-          String senderId = systemServer.getOwnerIDForVehicle(vehicle); 
-          if (ownerID.equals(senderId)) {
-              ownerHistory.add(vehicle);
-          }
-      }
-      return ownerHistory;
+      return DatabaseManager.getInstance().getOwnerVehicleHistory(ownerID);
   }
   
   public synchronized boolean isJobInSystem(String jobID) {
@@ -540,21 +531,7 @@ public class VCController implements Serializable {
    * @return List<Job> A list of jobs submitted by the client.
    */
   public synchronized List<Job> getClientJobHistory(String loginID) {
-      systemServer.reloadState();
-      // Get ALL jobs: approved jobs (pending/in-progress) + completed jobs
-      List<Job> allJobs = new ArrayList<>();
-      allJobs.addAll(systemServer.getAllApprovedJobs()); // Pending/In-Progress
-      allJobs.addAll(archivedJobs); // Completed (also in server's storageArchive)
-
-      List<Job> clientHistory = new ArrayList<>();
-
-      for (Job job : allJobs) {
-          String senderId = systemServer.getLoginIDForJob(job); 
-          if (loginID.equals(senderId)) {
-              clientHistory.add(job);
-          }
-      }
-      return clientHistory;
+      return DatabaseManager.getInstance().getClientJobHistory(loginID);
   }
 
   public synchronized List<Job> getInProgressJobs() {

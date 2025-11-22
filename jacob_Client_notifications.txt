@@ -1,4 +1,0 @@
-[2025-11-19 14:26:42] Job request 123456-142641-451 submitted and acknowledged by server
-[2025-11-19 14:28:54] Your job 123456-142641-451 has been APPROVED and added to the queue.
-[2025-11-19 14:31:27] Job request 246824-143103-676 submitted and acknowledged by server
-[2025-11-19 14:31:44] Your job request 246824-143103-676 has been REJECTED.

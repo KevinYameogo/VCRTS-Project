@@ -3,11 +3,17 @@ import java.io.Serializable;
 public class Owner extends User implements Serializable {
     private static final long serialVersionUID = 1L;
     
-    private String paymentInfo;
+    private String cardHolder;
+    private String cardNumber;
+    private String cvc;
+    private String expiry;
 
-    public Owner(String userID, String name, String password, String paymentInfo) {
+    public Owner(String userID, String name, String password, String cardHolder, String cardNumber, String cvc, String expiry) {
         super(userID, name, password);
-        this.paymentInfo = paymentInfo;
+        this.cardHolder = cardHolder;
+        this.cardNumber = cardNumber;
+        this.cvc = cvc;
+        this.expiry = expiry;
     }
 
     @Override
@@ -15,11 +21,15 @@ public class Owner extends User implements Serializable {
         return "Owner";
     }
 
-    public String getPaymentInfo() {
-        return paymentInfo;
-    }
+    public String getCardHolder() { return cardHolder; }
+    public String getCardNumber() { return cardNumber; }
+    public String getCvc() { return cvc; }
+    public String getExpiry() { return expiry; }
 
-    public void setPaymentInfo(String paymentInfo) {
-        this.paymentInfo = paymentInfo;
+    public void setPaymentInfo(String cardHolder, String cardNumber, String cvc, String expiry) {
+        this.cardHolder = cardHolder;
+        this.cardNumber = cardNumber;
+        this.cvc = cvc;
+        this.expiry = expiry;
     }
 }

@@ -81,7 +81,7 @@ public class OwnerGUI extends JPanel {
         this.server = controller.getServer();
         this.submittedRequests = new HashMap<>();
         
-        this.paymentInfo = ownerUser.getPaymentInfo();
+        // this.paymentInfo = ownerUser.getPaymentInfo(); // Removed
         this.PAYMENT_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_payment.dat";
         this.NOTIFICATION_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_notifications.txt";
 
@@ -105,7 +105,16 @@ public class OwnerGUI extends JPanel {
         badgeLabel.setVerticalAlignment(SwingConstants.CENTER);
         badgeLabel.setPreferredSize(new Dimension(18, 18));
         badgeLabel.setVisible(false);
+        badgeLabel.setVisible(false);
         badgeLabel.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1, true));
+        
+        // Initialize badge with unread count from DB
+        int unreadCount = DatabaseManager.getInstance().getUnreadNotificationCount(ownerUser.getUserID());
+        if (unreadCount > 0) {
+            notificationCount = unreadCount;
+            badgeLabel.setText(String.valueOf(notificationCount));
+            badgeLabel.setVisible(true);
+        }
 
         JPanel tabHeader = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 0));
         tabHeader.setOpaque(false);
@@ -119,6 +128,8 @@ public class OwnerGUI extends JPanel {
             public void stateChanged(ChangeEvent e) {
                 if (tabs.getSelectedIndex() == notificationsTabIndex) {
                     resetNotificationBadge();
+                    // Mark all as read in DB when tab is opened
+                    DatabaseManager.getInstance().markNotificationsRead(ownerUser.getUserID());
                 } else if (tabs.getSelectedIndex() == 0) { 
                     loadVehiclesFromCentralStorage(); 
                 }
@@ -129,7 +140,7 @@ public class OwnerGUI extends JPanel {
         
         loadVehiclesFromCentralStorage(); 
         loadPaymentInfo();
-        loadNotifications();  
+        loadNotifications(); // Re-enabled to show persistent history  
         
         // Start persistent notification listener
         startNotificationClient();
@@ -152,7 +163,7 @@ public class OwnerGUI extends JPanel {
             backgroundNotificationClient.setNotificationCallback(this::addNotification);
             
             // Load any queued notifications from server
-            checkServerNotifications();
+            // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
             
             // Start status refresh timer
             startStatusRefreshTimer();
@@ -172,7 +183,7 @@ public class OwnerGUI extends JPanel {
         notificationThread.start();
         
         // Load any queued notifications from server
-        checkServerNotifications();
+        // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
         
         // Start status refresh timer
         startStatusRefreshTimer();
@@ -243,7 +254,8 @@ public class OwnerGUI extends JPanel {
                                 if (callback != null) {
                                     callback.onNotificationReceived(notification);
                                 } else {
-                                    saveNotificationToFile(notification);
+                                    // Fallback: Log to console (Server handles persistence)
+                                    System.out.println("NotificationClient (Owner): Received (No GUI): " + notification);
                                 }
                             }
                         } catch (EOFException e) {
@@ -274,43 +286,7 @@ public class OwnerGUI extends JPanel {
         
         //
         private void saveNotificationToFile(String notification) {
-            String filename = userID + "_owner_notifications.txt";
-            String timestamp = TS_FMT.format(LocalDateTime.now());
-            String formattedNotif = "[" + timestamp + "] " + notification;
-            
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename, true))) {
-                writer.write(formattedNotif);
-                writer.newLine();
-                System.out.println("NotificationClient (Owner): Saved to file: " + formattedNotif);
-            } catch (IOException e) {
-                System.err.println("NotificationClient (Owner): Error saving notification: " + e.getMessage());
-            }
-            
-            // INCREMENT THE COUNT FILE
-            String countFilename = filename + "_count.txt";
-            try {
-                int currentCount = 0;
-                File countFile = new File(countFilename);
-                if (countFile.exists()) {
-                    try (BufferedReader reader = new BufferedReader(new FileReader(countFile))) {
-                        String line = reader.readLine();
-                        if (line != null) {
-                            currentCount = Integer.parseInt(line.trim());
-                        }
-                    } catch (NumberFormatException e) {
-                        System.err.println("Error parsing count file, resetting to 0");
-                    }
-                }
-                
-                // Increment and save
-                currentCount++;
-                try (PrintWriter writer = new PrintWriter(new FileWriter(countFile, false))) {
-                    writer.print(currentCount);
-                    System.out.println("NotificationClient (Owner): Incremented count to " + currentCount);
-                }
-            } catch (IOException e) {
-                System.err.println("NotificationClient (Owner): Error updating count: " + e.getMessage());
-            }
+            // Deprecated: File persistence removed.
         }
     }
     
@@ -320,7 +296,7 @@ public class OwnerGUI extends JPanel {
     }
     
     private void checkServerNotifications() {
-        List<String> serverNotifications = server.getNotifications(ownerUser.getUserID());
+        List<String> serverNotifications = DatabaseManager.getInstance().getNotifications(ownerUser.getUserID());
         for (String notification : serverNotifications) {
             addNotification(notification);
         }
@@ -340,11 +316,11 @@ public class OwnerGUI extends JPanel {
                 String vehicleID = (vehicle != null) ? vehicle.getVehicleID() : vehicleSignature;
 
                 if (request != null && request.getStatus().equals("Approved")) {
-                    addNotification("✓ Vehicle " + vehicleID + " has been APPROVED by VC Controller");
-                } else if (request != null && request.getStatus().equals("Rejected")) {
-                    addNotification("✗ Vehicle " + vehicleID + " has been REJECTED by VC Controller");
-                    removeVehicleFromTable(vehicleSignature);
-                }
+                // Notification handled by Server Push
+            } else if (request != null && request.getStatus().equals("Rejected")) {
+                // Notification handled by Server Push
+                removeVehicleFromTable(vehicleSignature);
+            }
                 
                 iterator.remove();
                 loadVehiclesFromCentralStorage(); 
@@ -408,7 +384,7 @@ public class OwnerGUI extends JPanel {
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
             resetNotificationBadge();
-            saveNotifications();
+            DatabaseManager.getInstance().clearNotifications(ownerUser.getUserID());
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -417,14 +393,17 @@ public class OwnerGUI extends JPanel {
     }
 
     public void addNotification(String message) {
-        String timestamp = TS_FMT.format(LocalDateTime.now());
-        String formattedMessage = "[" + timestamp + "] " + message;
+        String formattedMessage;
+        if (message.startsWith("[")) {
+             formattedMessage = message;
+        } else {
+             String timestamp = TS_FMT.format(LocalDateTime.now());
+             formattedMessage = "[" + timestamp + "] " + message;
+        }
         
         SwingUtilities.invokeLater(() -> {
             notificationListModel.addElement(formattedMessage);
             
-            // Always increment badge for NEW notifications
-            // Check if we're NOT on the notifications tab before incrementing
             JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, OwnerGUI.this);
             if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
                 notificationCount++;
@@ -432,74 +411,24 @@ public class OwnerGUI extends JPanel {
                 badgeLabel.setVisible(true);
             }
             
-            saveNotifications();
-
+            // DatabaseManager.getInstance().addNotification REMOVED to prevent duplicates
         });
     }
 
     // Also update the saveNotifications method to ensure count is always saved:
 
-    private void saveNotifications() {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(NOTIFICATION_FILE))) {
-            for (int i = 0; i < notificationListModel.size(); i++) {
-                writer.write(notificationListModel.getElementAt(i));
-                writer.newLine();
-            }
-        } catch (IOException e) {
-            System.err.println("Error saving notifications: " + e.getMessage());
-        }
-        
-        // Always save the count separately
-        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
-            countWriter.print(this.notificationCount);
-            System.out.println("OwnerGUI: Saved notification count: " + this.notificationCount);
-        } catch (IOException e) {
-            System.err.println("Error saving notification count: " + e.getMessage());
-        }
-    }
-
-    // And ensure resetNotificationBadge() saves the cleared state:
+    private void saveNotifications() {}
 
     private void resetNotificationBadge() {
         notificationCount = 0;
         badgeLabel.setVisible(false);
-        // Save the reset count immediately
-        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
-            countWriter.print(0);
-            System.out.println("OwnerGUI: Reset notification count to 0");
-        } catch (IOException e) {
-            System.err.println("Error saving reset notification count: " + e.getMessage());
-        }
     }
 
     private void loadNotifications() {
-        File file = new File(NOTIFICATION_FILE);
-        if (!file.exists()) return;
-
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                notificationListModel.addElement(line);
-            }
-        } catch (IOException e) {
-            System.err.println("Error loading notifications: " + e.getMessage());
-        }
-        
-        File countFile = new File(NOTIFICATION_FILE + "_count.txt");
-        if (countFile.exists()) {
-            try (BufferedReader countReader = new BufferedReader(new FileReader(countFile))) {
-                String countLine = countReader.readLine();
-                if (countLine != null) {
-                    try {
-                        int unseenCount = Integer.parseInt(countLine.trim());
-                        setNotificationCount(unseenCount);
-                    } catch (NumberFormatException e) {
-                        System.err.println("Error parsing notification count.");
-                    }
-                }
-            } catch (IOException e) {
-                 System.err.println("Error loading notification count: " + e.getMessage());
-            }
+        notificationListModel.clear();
+        List<String> notifs = DatabaseManager.getInstance().getNotifications(ownerUser.getUserID());
+        for (String n : notifs) {
+            notificationListModel.addElement(n);
         }
     }
     
@@ -510,14 +439,18 @@ public class OwnerGUI extends JPanel {
         List<Vehicle> vehicleHistory = controller.getOwnerVehicleHistory(ownerUser.getUserID()); 
         
         for (Vehicle vehicle : vehicleHistory) {
-             String ownerEnteredID = server.getVehicleOwnerIDForDisplay(vehicle);
+             String ownerEnteredID = vehicle.getOwnerEnteredID();
              if (ownerEnteredID == null || ownerEnteredID.isEmpty()) {
-                 System.err.println("Owner ID not found in server map for vehicle: " + vehicle.getVehicleID());
-                 ownerEnteredID = ownerUser.getUserID(); 
+                 ownerEnteredID = "UNKNOWN"; 
+             }
+             
+             String timestamp = "N/A";
+             if (vehicle.getTimestamp() != null) {
+                 timestamp = TS_FMT.format(vehicle.getTimestamp());
              }
              
              tableModel.addRow(new Object[]{
-                 TS_FMT.format(LocalDateTime.now()), 
+                 timestamp, 
                  ownerEnteredID,
                  vehicle.getMake(),
                  vehicle.getModel(),
@@ -752,6 +685,7 @@ public class OwnerGUI extends JPanel {
         }
 
         ownerUser.setPassword(newPass);
+        DatabaseManager.getInstance().saveUser(ownerUser);
 
         passStatusLabel.setForeground(new Color(34, 139, 34));
         passStatusLabel.setText("Password successfully updated! New password is now active.");
@@ -765,22 +699,20 @@ public class OwnerGUI extends JPanel {
         if (paymentDialog == null) {
             paymentDialog = new PaymentInfoDialog(SwingUtilities.getWindowAncestor(this));
         }
-        paymentDialog.prefill(this.paymentInfo);
+        paymentDialog.prefill(ownerUser.getCardHolder(), ownerUser.getCardNumber(), ownerUser.getCvc(), ownerUser.getExpiry());
         paymentDialog.setVisible(true);
 
-        if (paymentDialog.getSavedInfo() != null) {
-            this.paymentInfo = paymentDialog.getSavedInfo();
-            savePaymentInfo();
-            loadPaymentInfo();
+        if (paymentDialog.isSaved()) {
+            String[] info = paymentDialog.getSavedInfo();
+            if (info != null) {
+                ownerUser.setPaymentInfo(info[0], info[1], info[2], info[3]);
+                DatabaseManager.getInstance().saveUser(ownerUser);
+                loadPaymentInfo();
+            }
         }
     }
 
     private void onDeletePaymentInfo(ActionEvent e) {
-        if (paymentInfo == null || paymentInfo.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No payment info to delete.");
-            return;
-        }
-
         int choice = JOptionPane.showConfirmDialog(this,
                 "Are you sure you want to delete your payment info?",
                 "Confirm Deletion",
@@ -788,15 +720,15 @@ public class OwnerGUI extends JPanel {
                 JOptionPane.WARNING_MESSAGE);
 
         if (choice == JOptionPane.YES_OPTION) {
-            this.paymentInfo = "";
-            savePaymentInfo();
+            ownerUser.setPaymentInfo("", "", "", "");
+            DatabaseManager.getInstance().saveUser(ownerUser);
             loadPaymentInfo();
             JOptionPane.showMessageDialog(this, "Payment Info Deleted.");
         }
     }
 
     private void onRegister(ActionEvent e) {
-        if (this.paymentInfo == null || this.paymentInfo.isEmpty()) {
+        if (ownerUser.getCardNumber() == null || ownerUser.getCardNumber().isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please add payment info (Tab 2) before registering a vehicle.", "Payment Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
@@ -842,7 +774,8 @@ public class OwnerGUI extends JPanel {
 
         String departureString = departureTime.toString();
         
-        Vehicle newVehicle = new Vehicle(license, make, model, year, license, state, departureTime);
+        // Create Vehicle with explicit Owner ID and Sender ID
+        Vehicle newVehicle = new Vehicle(ownerId, ownerUser.getUserID(), make, model, year, license, state, departureTime);
         
         Request request = server.createRequest(ownerUser.getUserID(), "VEHICLE_REGISTRATION", newVehicle);
         server.mapVehicleOwnerIDForDisplay(license, ownerId); 
@@ -859,7 +792,7 @@ public class OwnerGUI extends JPanel {
             "Request Acknowledged", 
             JOptionPane.INFORMATION_MESSAGE);
         
-        addNotification("Vehicle registration request for " + license + " submitted and acknowledged by server");
+        // addNotification("Vehicle registration request for " + license + " submitted and acknowledged by server"); // Removed - Server sends this
 
         String ts = TS_FMT.format(LocalDateTime.now());
         tableModel.addRow(new Object[]{
@@ -868,50 +801,25 @@ public class OwnerGUI extends JPanel {
     }
 
     private void loadPaymentInfo() {
-        File file = new File(PAYMENT_FILE);
-        paymentTableModel.setRowCount(0);
-
-        if (!file.exists()) {
-            addPaymentButton.setText("Add Payment Info");
-            this.paymentInfo = "";
-            ownerUser.setPaymentInfo(""); 
-            return;
-        }
-
-        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-            String loadedInfo = br.readLine();
-            if (loadedInfo != null && !loadedInfo.isEmpty()) {
-                this.paymentInfo = loadedInfo;
-                ownerUser.setPaymentInfo(loadedInfo); 
-                String[] parts = paymentInfo.split("\\|");
-
-                if (parts.length == 5) {
-                    paymentTableModel.addRow(new Object[]{"Name on Card", parts[0]});
-                    paymentTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + parts[1].substring(12)});
-                    paymentTableModel.addRow(new Object[]{"Expiry", parts[3] + "/" + parts[4]});
-                }
-
+        User updatedUser = DatabaseManager.getInstance().loadUser(ownerUser.getUserID());
+        if (updatedUser instanceof Owner) {
+            Owner o = (Owner) updatedUser;
+            ownerUser.setPaymentInfo(o.getCardHolder(), o.getCardNumber(), o.getCvc(), o.getExpiry());
+            
+            paymentTableModel.setRowCount(0);
+            if (o.getCardNumber() != null && !o.getCardNumber().isEmpty()) {
+                paymentTableModel.addRow(new Object[]{"Card Holder", o.getCardHolder()});
+                paymentTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + o.getCardNumber().substring(Math.max(0, o.getCardNumber().length() - 4))});
+                paymentTableModel.addRow(new Object[]{"Expiry", o.getExpiry()});
                 addPaymentButton.setText("Edit Payment Info");
             } else {
                 addPaymentButton.setText("Add Payment Info");
-                this.paymentInfo = "";
-                ownerUser.setPaymentInfo(""); 
             }
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Error loading payment info from " + PAYMENT_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    private void savePaymentInfo() {
-        ownerUser.setPaymentInfo(this.paymentInfo); 
-        try (FileWriter fw = new FileWriter(PAYMENT_FILE, false)) {
-            fw.write(this.paymentInfo);
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Error saving payment info file.", "Save Error", JOptionPane.ERROR_MESSAGE);
-        }
-    }
+    // Deprecated
+    private void savePaymentInfo() {}
 
     private void clearForm() {
         ownerIdField.setText("");
@@ -929,12 +837,12 @@ public class OwnerGUI extends JPanel {
 
     // --- Payment Info Dialog ---
     private class PaymentInfoDialog extends JDialog {
-        private JTextField nameField;
-        private JTextField cardField;
+        private JTextField holderField;
+        private JTextField numberField;
         private JTextField cvcField;
-        private JTextField expMonthField;
-        private JTextField expYearField;
-        private String savedInfo; 
+        private JTextField expiryField;
+        private String[] savedInfo;
+        private boolean isSaved = false;
 
         PaymentInfoDialog(Window owner) {
             super(owner, "Add/Edit Payment Info", ModalityType.APPLICATION_MODAL);
@@ -945,80 +853,66 @@ public class OwnerGUI extends JPanel {
             gbc.insets = new Insets(5, 5, 5, 5);
             gbc.fill = GridBagConstraints.HORIZONTAL;
 
-            nameField = new JTextField(20);
-            ((AbstractDocument) nameField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
+            holderField = new JTextField(20);
+            ((AbstractDocument) holderField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
 
-            cardField = new JTextField(16);
-            ((AbstractDocument) cardField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(16));
+            numberField = new JTextField(16);
+            ((AbstractDocument) numberField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(16));
 
             cvcField = new JTextField(3);
             ((AbstractDocument) cvcField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(3));
 
-            expMonthField = new JTextField(2);
-            ((AbstractDocument) expMonthField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
-
-            expYearField = new JTextField(2);
-            ((AbstractDocument) expYearField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
-
-            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Name on Card:"), gbc);
-            gbc.gridx = 1; gbc.gridy = 0; add(nameField, gbc);
+            expiryField = new JTextField(5); // MM/YY
+            
+            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Card Holder:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 0; add(holderField, gbc);
+            
             gbc.gridx = 0; gbc.gridy = 1; add(new JLabel("Card Number:"), gbc);
-            gbc.gridx = 1; gbc.gridy = 1; add(cardField, gbc);
+            gbc.gridx = 1; gbc.gridy = 1; add(numberField, gbc);
+            
             gbc.gridx = 0; gbc.gridy = 2; add(new JLabel("CVC:"), gbc);
             gbc.gridx = 1; gbc.gridy = 2; add(cvcField, gbc);
-
-            JPanel expPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-            expPanel.add(expMonthField);
-            expPanel.add(new JLabel("/"));
-            expPanel.add(expYearField);
-
+            
             gbc.gridx = 0; gbc.gridy = 3; add(new JLabel("Expiry (MM/YY):"), gbc);
-            gbc.gridx = 1; gbc.gridy = 3; add(expPanel, gbc);
+            gbc.gridx = 1; gbc.gridy = 3; add(expiryField, gbc);
 
             JButton saveButton = new JButton("Save");
             saveButton.addActionListener(this::onSavePayment);
             gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2; add(saveButton, gbc);
         }
 
-        public String getSavedInfo() {
+        public String[] getSavedInfo() {
             return savedInfo;
         }
+        
+        public boolean isSaved() {
+            return isSaved;
+        }
 
-        public void prefill(String info) {
-            if (info != null && !info.isEmpty()) {
-                String[] parts = info.split("\\|");
-                if (parts.length == 5) {
-                    nameField.setText(parts[0]);
-                    cardField.setText(parts[1]);
-                    cvcField.setText(parts[2]);
-                    expMonthField.setText(parts[3]);
-                    expYearField.setText(parts[4]);
-                }
-            } else {
-                nameField.setText("");
-                cardField.setText("");
-                cvcField.setText("");
-                expMonthField.setText("");
-                expYearField.setText("");
-            }
+        public void prefill(String holder, String number, String cvc, String expiry) {
+            holderField.setText(holder != null ? holder : "");
+            numberField.setText(number != null ? number : "");
+            cvcField.setText(cvc != null ? cvc : "");
+            expiryField.setText(expiry != null ? expiry : "");
             this.savedInfo = null;
+            this.isSaved = false;
         }
 
         private void onSavePayment(ActionEvent e) {
-            String name = nameField.getText().trim();
-            String card = cardField.getText().trim();
+            String holder = holderField.getText().trim();
+            String number = numberField.getText().trim();
             String cvc = cvcField.getText().trim();
-            String expMonth = expMonthField.getText().trim();
-            String expYear = expYearField.getText().trim();
+            String expiry = expiryField.getText().trim();
 
-            if (name.isEmpty() || card.length() != 16 || cvc.length() != 3 || expMonth.length() != 2 || expYear.length() != 2) {
+            if (holder.isEmpty() || number.length() != 16 || cvc.length() != 3 || expiry.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "Please fill all fields correctly.\nCard Number must be 16 digits.\nCVC must be 3 digits.", "Validation Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
 
-            this.savedInfo = name + "|" + card + "|" + cvc + "|" + expMonth + "|" + expYear;
+            this.savedInfo = new String[]{holder, number, cvc, expiry};
+            this.isSaved = true;
             JOptionPane.showMessageDialog(this, "Payment Info Saved!");
-            dispose();
+            dispose(); 
         }
     }
 

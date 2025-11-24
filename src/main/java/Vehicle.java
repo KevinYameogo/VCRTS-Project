@@ -18,9 +18,14 @@ public class Vehicle implements Serializable {
     
     private String currentJobID; 
 
+    private String ownerEnteredID;
+    private String senderID; 
+
     //Constructor
-    public Vehicle(String vehicleID, String make, String model, int year, String licensePlate, String state, LocalDateTime departureSchedule) {
-        this.vehicleID = licensePlate;  
+    public Vehicle(String ownerEnteredID, String senderID, String make, String model, int year, String licensePlate, String state, LocalDateTime departureSchedule) {
+        this.vehicleID = licensePlate + "-" + state; // Unique ID composition
+        this.ownerEnteredID = ownerEnteredID;
+        this.senderID = senderID;
         this.make = make;
         this.model = model;
         this.year = year;
@@ -31,6 +36,11 @@ public class Vehicle implements Serializable {
         this.cpuStatus = "Idle";
         this.memoryStatus = "Free";
         this.currentJobID = null; 
+    }
+
+    // Legacy constructor for backward compatibility
+    public Vehicle(String licensePlate, String make, String model, int year, String licensePlateArg, String state, LocalDateTime departureSchedule) {
+        this("UNKNOWN", "UNKNOWN", make, model, year, licensePlate, state, departureSchedule);
     }
 
     public void startExecution(String jobID) {
@@ -106,5 +116,45 @@ public class Vehicle implements Serializable {
     }
     public int getYear() {    
         return year;
+    }
+    public void restoreState(String status, String cpuStatus, String memoryStatus, String currentJobID) {
+        this.status = status;
+        this.cpuStatus = cpuStatus;
+        this.memoryStatus = memoryStatus;
+        this.currentJobID = currentJobID;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public String getCpuStatus() {
+        return cpuStatus;
+    }
+
+    public String getMemoryStatus() {
+        return memoryStatus;
+    }
+
+    public String getCurrentJobID() {
+        return currentJobID;
+    }
+
+    public String getOwnerEnteredID() {
+        return ownerEnteredID;
+    }
+
+    public String getSenderID() {
+        return senderID;
+    }
+
+    private LocalDateTime timestamp;
+
+    public LocalDateTime getTimestamp() {
+        return timestamp;
+    }
+
+    public void setTimestamp(LocalDateTime timestamp) {
+        this.timestamp = timestamp;
     }
 }

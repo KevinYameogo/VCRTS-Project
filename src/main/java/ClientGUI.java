@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.ArrayList; 
 import java.util.List; 
 import java.net.Socket;
+import java.util.UUID;
 
 /**
  * ClientGUI with persistent notification client .
@@ -63,11 +64,8 @@ public class ClientGUI extends JPanel {
     private int notificationCount = 0;
     private int notificationsTabIndex;
 
-    private final String BILLING_FILE;
-    private final String NOTIFICATION_FILE;
-
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final DateTimeFormatter JOB_ID_TS_FMT = DateTimeFormatter.ofPattern("HHmmss");
+
 
     public ClientGUI(Client clientUser, Runnable onLogout, VCController controller) { 
         this.clientUser = clientUser; 
@@ -76,10 +74,8 @@ public class ClientGUI extends JPanel {
         this.server = controller.getServer();
         this.submittedRequests = new HashMap<>();
         
-        this.billingInfo = clientUser.getBillingInfo(); 
-        this.BILLING_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_billing.dat"; 
-        this.NOTIFICATION_FILE = clientUser.getUserID() + "_" + clientUser.getRole() + "_notifications.txt";
-
+        // this.billingInfo = clientUser.getBillingInfo(); // Removed
+        
         setLayout(new BorderLayout());
 
         JTabbedPane tabs = new JTabbedPane();
@@ -101,7 +97,16 @@ public class ClientGUI extends JPanel {
         badgeLabel.setVerticalAlignment(SwingConstants.CENTER);
         badgeLabel.setPreferredSize(new Dimension(18, 18));
         badgeLabel.setVisible(false);
+        badgeLabel.setVisible(false);
         badgeLabel.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1, true));
+        
+        // Initialize badge with unread count from DB
+        int unreadCount = DatabaseManager.getInstance().getUnreadNotificationCount(clientUser.getUserID());
+        if (unreadCount > 0) {
+            notificationCount = unreadCount;
+            badgeLabel.setText(String.valueOf(notificationCount));
+            badgeLabel.setVisible(true);
+        }
 
         JPanel tabHeader = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 0));
         tabHeader.setOpaque(false);
@@ -117,6 +122,8 @@ public class ClientGUI extends JPanel {
             public void stateChanged(ChangeEvent e) {
                 if (tabs.getSelectedIndex() == notificationsTabIndex) {
                     resetNotificationBadge();
+                    // Mark all as read in DB when tab is opened
+                    DatabaseManager.getInstance().markNotificationsRead(clientUser.getUserID());
                 } else if (tabs.getSelectedIndex() == 0 || tabs.getSelectedIndex() == 1) { 
                     loadJobsFromCentralStorage(); 
                 }
@@ -126,7 +133,8 @@ public class ClientGUI extends JPanel {
         // Load persistent data and restore badge count
         loadJobsFromCentralStorage();
         loadBillingInfo();
-        loadNotifications();
+        loadBillingInfo();
+        loadNotifications(); // Re-enabled to show persistent history
 
         // Start persistent notification listener (only if not already running)
         startNotificationClient();
@@ -149,7 +157,7 @@ public class ClientGUI extends JPanel {
             backgroundNotificationClient.setNotificationCallback(this::addNotification);
             
             // Load any queued notifications from server
-            checkServerNotifications();
+            // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
             
             // Start status refresh timer
             startStatusRefreshTimer();
@@ -169,7 +177,7 @@ public class ClientGUI extends JPanel {
         notificationThread.start();
         
         // Load any queued notifications from server
-        checkServerNotifications();
+        // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
         
         // Start status refresh timer
         startStatusRefreshTimer();
@@ -216,9 +224,7 @@ public class ClientGUI extends JPanel {
             this.callback = callback;
         }
         
-        public void shutdown() {
-            this.running = false;
-        }
+
 
         @Override
         public void run() {
@@ -244,8 +250,8 @@ public class ClientGUI extends JPanel {
                                 if (callback != null) {
                                     callback.onNotificationReceived(notification);
                                 } else {
-                                    // Fallback: save directly to file if no GUI is active
-                                    saveNotificationToFile(notification);
+                                    // Fallback: Log to console (Server handles persistence)
+                                    System.out.println("NotificationClient: Received (No GUI): " + notification);
                                 }
                             }
                         } catch (EOFException e) {
@@ -275,47 +281,12 @@ public class ClientGUI extends JPanel {
         }
         
         /**
-     * Saves notification directly to file when no GUI callback is available.
-     */
-    private void saveNotificationToFile(String notification) {
-        String filename = userID + "_client_notifications.txt";
-        String timestamp = TS_FMT.format(LocalDateTime.now());
-        String formattedNotif = "[" + timestamp + "] " + notification;
-        
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename, true))) {
-            writer.write(formattedNotif);
-            writer.newLine();
-            System.out.println("NotificationClient: Saved to file: " + formattedNotif);
-        } catch (IOException e) {
-            System.err.println("NotificationClient: Error saving notification: " + e.getMessage());
+         * Fallback for when no GUI is active.
+         * Persistence is now handled by the Server/Database.
+         */
+        private void saveNotificationToFile(String notification) {
+            // Deprecated: File persistence removed.
         }
-        
-        // INCREMENT THE COUNT FILE
-        String countFilename = filename + "_count.txt";
-        try {
-            int currentCount = 0;
-            File countFile = new File(countFilename);
-            if (countFile.exists()) {
-                try (BufferedReader reader = new BufferedReader(new FileReader(countFile))) {
-                    String line = reader.readLine();
-                    if (line != null) {
-                        currentCount = Integer.parseInt(line.trim());
-                    }
-                } catch (NumberFormatException e) {
-                    System.err.println("Error parsing count file, resetting to 0");
-                }
-            }
-            
-            // Increment and save
-            currentCount++;
-            try (PrintWriter writer = new PrintWriter(new FileWriter(countFile, false))) {
-                writer.print(currentCount);
-                System.out.println("NotificationClient: Incremented count to " + currentCount);
-            }
-        } catch (IOException e) {
-            System.err.println("NotificationClient: Error updating count: " + e.getMessage());
-        }
-    }
     }
     
     /**
@@ -330,7 +301,8 @@ public class ClientGUI extends JPanel {
      * Checks for new notifications from the server queue (fallback).
      */
     private void checkServerNotifications() {
-        List<String> serverNotifications = server.getNotifications(clientUser.getUserID());
+        // Load notifications from Database
+        List<String> serverNotifications = DatabaseManager.getInstance().getNotifications(clientUser.getUserID());
         for (String notification : serverNotifications) {
             addNotification(notification);
         }
@@ -350,9 +322,9 @@ public class ClientGUI extends JPanel {
             
             if (request == null || !request.getStatus().equals("Pending")) {
                 if (request != null && request.getStatus().equals("Approved")) {
-                    addNotification("✓ Job " + jobID + " has been APPROVED by VC Controller");
+                    // Notification handled by Server Push
                 } else if (request != null && request.getStatus().equals("Rejected")) {
-                    addNotification("✗ Job " + jobID + " has been REJECTED by VC Controller");
+                    // Notification handled by Server Push
                     removeJobFromTable(jobID);
                 }
                 
@@ -373,24 +345,7 @@ public class ClientGUI extends JPanel {
         });
     }
     
-    private void updateNotificationBadge() {
-        JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, this);
-        if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
-             notificationCount++;
-             badgeLabel.setText(String.valueOf(notificationCount));
-             badgeLabel.setVisible(true);
-        }
-    }
 
-    private void setNotificationCount(int count) {
-        this.notificationCount = count;
-        if (count > 0) {
-            badgeLabel.setText(String.valueOf(count));
-            badgeLabel.setVisible(true);
-        } else {
-            badgeLabel.setVisible(false);
-        }
-    }
 
     private JPanel createNotificationsPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
@@ -415,7 +370,7 @@ public class ClientGUI extends JPanel {
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
             resetNotificationBadge();
-            saveNotifications();
+            DatabaseManager.getInstance().clearNotifications(clientUser.getUserID());
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -424,8 +379,13 @@ public class ClientGUI extends JPanel {
     }
 
     public void addNotification(String message) {
-        String timestamp = TS_FMT.format(LocalDateTime.now());
-        String formattedMessage = "[" + timestamp + "] " + message;
+        String formattedMessage;
+        if (message.startsWith("[")) {
+             formattedMessage = message;
+        } else {
+             String timestamp = TS_FMT.format(LocalDateTime.now());
+             formattedMessage = "[" + timestamp + "] " + message;
+        }
         
         SwingUtilities.invokeLater(() -> {
             notificationListModel.addElement(formattedMessage);
@@ -439,74 +399,26 @@ public class ClientGUI extends JPanel {
                 badgeLabel.setVisible(true);
             }
             
-            saveNotifications();
-
-    
+            // Save to DB REMOVED - Server handles this now to prevent duplicates
         });
     }
 
     // Also update the saveNotifications method to ensure count is ALWAYS saved:
 
     private void saveNotifications() {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(NOTIFICATION_FILE))) {
-            for (int i = 0; i < notificationListModel.size(); i++) {
-                writer.write(notificationListModel.getElementAt(i));
-                writer.newLine();
-            }
-        } catch (IOException e) {
-            System.err.println("Error saving notifications: " + e.getMessage());
-        }
-        
-        // ALWAYS save the count separately
-        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
-            countWriter.print(this.notificationCount);
-            System.out.println("ClientGUI: Saved notification count: " + this.notificationCount);
-        } catch (IOException e) {
-            System.err.println("Error saving notification count: " + e.getMessage());
-        }
+        // Deprecated: Notifications are saved to DB immediately on add.
     }
 
-    // And ensure resetNotificationBadge() saves the cleared state:
     private void resetNotificationBadge() {
         notificationCount = 0;
         badgeLabel.setVisible(false);
-        // Save the reset count immediately
-        try (PrintWriter countWriter = new PrintWriter(new FileWriter(NOTIFICATION_FILE + "_count.txt", false))) {
-            countWriter.print(0);
-            System.out.println("ClientGUI: Reset notification count to 0");
-        } catch (IOException e) {
-            System.err.println("Error saving reset notification count: " + e.getMessage());
-        }
     }
     
     private void loadNotifications() {
-        File file = new File(NOTIFICATION_FILE);
-        if (!file.exists()) return;
-        
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                notificationListModel.addElement(line);
-            }
-        } catch (IOException e) {
-            System.err.println("Error loading notifications: " + e.getMessage());
-        }
-        
-        File countFile = new File(NOTIFICATION_FILE + "_count.txt");
-        if (countFile.exists()) {
-            try (BufferedReader countReader = new BufferedReader(new FileReader(countFile))) {
-                String countLine = countReader.readLine();
-                if (countLine != null) {
-                    try {
-                        int unseenCount = Integer.parseInt(countLine.trim());
-                        setNotificationCount(unseenCount);
-                    } catch (NumberFormatException e) {
-                        System.err.println("Error parsing notification count.");
-                    }
-                }
-            } catch (IOException e) {
-                 System.err.println("Error loading notification count: " + e.getMessage());
-            }
+        notificationListModel.clear();
+        List<String> notifs = DatabaseManager.getInstance().getNotifications(clientUser.getUserID());
+        for (String n : notifs) {
+            notificationListModel.addElement(n);
         }
     }
 
@@ -803,247 +715,205 @@ public class ClientGUI extends JPanel {
         passStatusLabel = new JLabel("Your password will be updated instantly.", SwingConstants.CENTER);
         passStatusLabel.setForeground(Color.BLUE);
         
-        int r = 1;
         gbc.gridwidth = 1;
+        gbc.gridy = 1;
+        panel.add(new JLabel("Old Password:"), gbc);
+        gbc.gridx = 1;
+        panel.add(oldPassField, gbc);
         
-        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Current Password:"), gbc);
-        gbc.gridx = 1; gbc.gridy = r++; panel.add(oldPassField, gbc);
-
-        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("New Password:"), gbc);
-        gbc.gridx = 1; gbc.gridy = r++; panel.add(newPassField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        panel.add(new JLabel("New Password:"), gbc);
+        gbc.gridx = 1;
+        panel.add(newPassField, gbc);
         
-        gbc.gridx = 0; gbc.gridy = r; panel.add(new JLabel("Confirm New Password:"), gbc);
-        gbc.gridx = 1; gbc.gridy = r++; panel.add(confirmNewPassField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = 3;
+        panel.add(new JLabel("Confirm New:"), gbc);
+        gbc.gridx = 1;
+        panel.add(confirmNewPassField, gbc);
         
-        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
-        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(changeButton, gbc); r++;
-        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(Box.createVerticalStrut(10), gbc); r++;
-        gbc.gridx = 0; gbc.gridy = r; gbc.gridwidth = 2; panel.add(passStatusLabel, gbc); r++;
-
+        gbc.gridx = 0;
+        gbc.gridy = 4;
+        gbc.gridwidth = 2;
+        gbc.anchor = GridBagConstraints.CENTER;
+        panel.add(changeButton, gbc);
+        
+        passStatusLabel = new JLabel(" ");
+        passStatusLabel.setFont(new Font("SansSerif", Font.ITALIC, 12));
+        gbc.gridy = 5;
+        panel.add(passStatusLabel, gbc);
+        
+        changeButton.addActionListener(this::onChangePassword);
+        
         return panel;
     }
 
-    private void onChangePassword(ActionEvent e) {
-        String currentPass = new String(oldPassField.getPassword());
-        String newPass = new String(newPassField.getPassword());
-        String confirmPass = new String(confirmNewPassField.getPassword());
+    // --- Actions ---
 
-        if (!currentPass.equals(clientUser.getPassword())) {
-            passStatusLabel.setForeground(Color.RED);
-            passStatusLabel.setText("Error: Current Password is incorrect.");
+    private void onSubmit(ActionEvent e) {
+        String clientId = clientIdField.getText().trim();
+        if (clientId.length() != 6) {
+            JOptionPane.showMessageDialog(this, "Client ID must be exactly 6 alphanumeric characters.", "Input Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        if (newPass.length() < 6) {
-            passStatusLabel.setForeground(Color.RED);
-            passStatusLabel.setText("Error: New password must be at least 6 characters long.");
-            return;
+        int duration = (int) durationSpinner.getValue();
+        String unit = (String) durationUnitBox.getSelectedItem();
+        if ("days".equals(unit)) {
+            duration *= 24;
         }
 
-        if (!newPass.equals(confirmPass)) {
-            passStatusLabel.setForeground(Color.RED);
-            passStatusLabel.setText("Error: New Password and Confirmation do not match.");
-            return;
-        }
+        int redundancy = (int) redundancySpinner.getValue();
 
-        clientUser.setPassword(newPass);
-
-        passStatusLabel.setForeground(new Color(34, 139, 34)); 
-        passStatusLabel.setText("Password successfully updated! New password is now active.");
+        int m = (int) deadlineMonthSpinner.getValue();
+        int d = (int) deadlineDaySpinner.getValue();
+        int y = (int) deadlineYearSpinner.getValue();
+        int h = (int) deadlineHourSpinner.getValue();
         
-        oldPassField.setText("");
-        newPassField.setText("");
-        confirmNewPassField.setText("");
+        LocalDateTime deadline;
+        try {
+            deadline = LocalDateTime.of(y, m, d, h, 0);
+        } catch (DateTimeException ex) {
+            JOptionPane.showMessageDialog(this, "Invalid Date/Time.", "Input Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        if (deadline.isBefore(LocalDateTime.now())) {
+             JOptionPane.showMessageDialog(this, "Deadline must be in the future.", "Input Error", JOptionPane.ERROR_MESSAGE);
+             return;
+        }
+
+        String jobId = clientId + "-" + UUID.randomUUID().toString().substring(0, 8);
+        
+        // Create Job with explicit Client ID and Sender ID
+        Job job = new Job(jobId, clientId, clientUser.getUserID(), duration, redundancy, deadline);
+        
+        Request request = server.createRequest(clientUser.getUserID(), "JOB_SUBMISSION", job);
+        
+        controller.processJobRequest(request);
+        
+        submittedRequests.put(job.getJobID(), request.getRequestID());
+        
+        JOptionPane.showMessageDialog(this, 
+            "Job Submission Request Sent!\n" +
+            "Request ID: " + request.getRequestID() + "\n" +
+            "Job ID: " + job.getJobID() + "\n" +
+            "Status: Waiting for VC Controller approval...", 
+            "Request Acknowledged", 
+            JOptionPane.INFORMATION_MESSAGE);
+        clearForm();
     }
 
-    private void refreshJobTable() {
-        int statusColumnIndex = 3; 
-        int jobIDColumnIndex = 2;  
-
-        for (int i = 0; i < tableModel.getRowCount(); i++) {
-            String jobID = (String) tableModel.getValueAt(i, jobIDColumnIndex);
-            String liveStatus = controller.getJobStatus(jobID);
-            String currentTableStatus = (String) tableModel.getValueAt(i, statusColumnIndex);
+    private void loadBillingInfo() {
+        User updatedUser = DatabaseManager.getInstance().loadUser(clientUser.getUserID());
+        if (updatedUser instanceof Client) {
+            Client c = (Client) updatedUser;
+            clientUser.setBillingInfo(c.getCardHolder(), c.getCardNumber(), c.getCvc(), c.getExpiry());
             
-            if (!liveStatus.equalsIgnoreCase(currentTableStatus) && 
-                !liveStatus.equalsIgnoreCase("Job not found") &&
-                !currentTableStatus.equalsIgnoreCase("Awaiting Approval")) {
-                
-                tableModel.setValueAt(liveStatus, i, statusColumnIndex);
+            billingTableModel.setRowCount(0);
+            if (c.getCardNumber() != null && !c.getCardNumber().isEmpty()) {
+                billingTableModel.addRow(new Object[]{"Card Holder", c.getCardHolder()});
+                billingTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + c.getCardNumber().substring(Math.max(0, c.getCardNumber().length() - 4))});
+                billingTableModel.addRow(new Object[]{"Expiry", c.getExpiry()});
+                addBillingButton.setText("Edit Billing Info");
+            } else {
+                addBillingButton.setText("Add Billing Info");
             }
         }
-    }
-    
-    private void loadJobsFromCentralStorage() {
-        tableModel.setRowCount(0);
-        server.reloadState();
-        
-        List<Job> jobHistory = controller.getClientJobHistory(clientUser.getUserID());
-        
-        for (Job job : jobHistory) {
-             String status = controller.getJobStatus(job.getJobID()); 
-             String clientEnteredID = server.getClientIDForJob(job);
-             if (clientEnteredID == null) {
-                 System.err.println("Client ID not found in server map for job: " + job.getJobID());
-                 clientEnteredID = job.getJobID().split("-")[0];
-             }
-             
-             tableModel.addRow(new Object[]{
-                 TS_FMT.format(LocalDateTime.now()), 
-                 clientEnteredID,
-                 job.getJobID(),
-                 status, 
-                 job.getDuration(), 
-                 job.getDeadline().toString(),
-                 job.getRedundancyLevel()
-             });
-        }
-        
-        System.out.println("ClientGUI: Loaded " + jobHistory.size() + " jobs from central storage.");
     }
 
     private void onAddBillingInfo(ActionEvent e) {
         if (billingDialog == null) {
             billingDialog = new BillingInfoDialog(SwingUtilities.getWindowAncestor(this));
         }
-        billingDialog.prefill(this.billingInfo);
+        billingDialog.prefill(clientUser.getCardHolder(), clientUser.getCardNumber(), clientUser.getCvc(), clientUser.getExpiry());
         billingDialog.setVisible(true);
-
-        if (billingDialog.getSavedInfo() != null) {
-            this.billingInfo = billingDialog.getSavedInfo();
-            saveBillingInfo();
-            loadBillingInfo();
+        
+        if (billingDialog.isSaved()) {
+            String[] info = billingDialog.getSavedInfo();
+            if (info != null) {
+                clientUser.setBillingInfo(info[0], info[1], info[2], info[3]);
+                DatabaseManager.getInstance().saveUser(clientUser);
+                loadBillingInfo();
+            }
         }
     }
 
     private void onDeleteBillingInfo(ActionEvent e) {
-        if (billingInfo == null || billingInfo.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No billing info to delete.");
-            return;
-        }
-
-        int choice = JOptionPane.showConfirmDialog(this,
-                "Are you sure you want to delete your billing info?",
-                "Confirm Deletion",
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.WARNING_MESSAGE);
-
-        if (choice == JOptionPane.YES_OPTION) {
-            this.billingInfo = "";
-            saveBillingInfo();
+        int confirm = JOptionPane.showConfirmDialog(this, "Are you sure you want to delete your billing info?", "Confirm Delete", JOptionPane.YES_NO_OPTION);
+        if (confirm == JOptionPane.YES_OPTION) {
+            clientUser.setBillingInfo("", "", "", "");
+            DatabaseManager.getInstance().saveUser(clientUser);
             loadBillingInfo();
-            JOptionPane.showMessageDialog(this, "Billing Info Deleted.");
         }
     }
+    
+    // Deprecated
+    private void saveBillingInfo() {}
 
-    private void onSubmit(ActionEvent e) {
-        if (this.billingInfo == null || this.billingInfo.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Please add billing info (Tab 3) before submitting a job.", "Billing Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
-        String clientID = clientIdField.getText().trim(); 
-        if (clientID.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Please enter a Client ID.", "Input Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        
-        String jobID = clientID + "-" + LocalDateTime.now().format(JOB_ID_TS_FMT) + "-" + ThreadLocalRandom.current().nextInt(100, 1000); 
-
-        if (controller.isJobInSystem(jobID)) {
-            JOptionPane.showMessageDialog(this, "A job with ID '" + jobID + "' already exists in the system. Try again.", "Duplicate Job ID", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
-        int redundancy = (Integer) redundancySpinner.getValue();
-
-        LocalDateTime deadline;
-        try {
-            int year = (Integer) deadlineYearSpinner.getValue();
-            int month = (Integer) deadlineMonthSpinner.getValue();
-            int day = (Integer) deadlineDaySpinner.getValue();
-            int hour = (Integer) deadlineHourSpinner.getValue();
-            deadline = LocalDateTime.of(year, month, day, hour, 0);
-
-            if (deadline.isBefore(LocalDateTime.now())) {
-                JOptionPane.showMessageDialog(this, "Deadline must be in the future.");
-                return;
+    private void loadJobsFromCentralStorage() {
+        List<Job> jobs = controller.getClientJobHistory(clientUser.getUserID());
+        tableModel.setRowCount(0);
+        for (Job job : jobs) {
+            String clientEnteredID = job.getClientEnteredID();
+            if (clientEnteredID == null || clientEnteredID.isEmpty()) {
+                clientEnteredID = "UNKNOWN";
             }
-        } catch (DateTimeException ex) {
-            JOptionPane.showMessageDialog(this, "Invalid date (e.g., Feb 30).");
-            return;
-        }
-
-        int durationAmount = (Integer) durationSpinner.getValue();
-        String durationUnit = String.valueOf(durationUnitBox.getSelectedItem());
-        int durationInHours = durationUnit.equals("days") ? (durationAmount * 24) : durationAmount;
-        String deadlineString = deadline.toString();
-
-        Job newJob = new Job(jobID, durationInHours, redundancy, deadline); 
-        
-        Request request = server.createRequest(clientUser.getUserID(), "JOB_SUBMISSION", newJob);
-        controller.processJobRequest(request); 
-        
-        submittedRequests.put(jobID, request.getRequestID());
-        
-        JOptionPane.showMessageDialog(this, 
-            "Job Request Sent!\n" +
-            "Request ID: " + request.getRequestID() + "\n" +
-            "Job ID: " + jobID + "\n" +
-            "Status: Waiting for VC Controller approval...", 
-            "Request Acknowledged", 
-            JOptionPane.INFORMATION_MESSAGE);
-        
-        addNotification("Job request " + jobID + " submitted and acknowledged by server");
-
-        String ts = TS_FMT.format(LocalDateTime.now());
-        tableModel.addRow(new Object[]{ts, clientID, jobID, "Awaiting Approval", durationInHours, deadlineString, redundancy}); 
-    }
-
-    private void loadBillingInfo() {
-        File file = new File(BILLING_FILE);
-        billingTableModel.setRowCount(0);
-
-        if (!file.exists()) {
-            addBillingButton.setText("Add Billing Info");
-            this.billingInfo = "";
-            clientUser.setBillingInfo(""); 
-            return;
-        }
-
-        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-            String loadedInfo = br.readLine();
-            if (loadedInfo != null && !loadedInfo.isEmpty()) {
-                this.billingInfo = loadedInfo;
-                clientUser.setBillingInfo(loadedInfo); 
-                String[] parts = billingInfo.split("\\|");
-
-                if (parts.length == 5) {
-                    billingTableModel.addRow(new Object[]{"Name on Card", parts[0]});
-                    billingTableModel.addRow(new Object[]{"Card Number", "**** **** **** " + parts[1].substring(12)});
-                    billingTableModel.addRow(new Object[]{"Expiry", parts[3] + "/" + parts[4]});
-                }
-
-                addBillingButton.setText("Edit Billing Info");
-            } else {
-                addBillingButton.setText("Add Billing Info");
-                this.billingInfo = "";
-                clientUser.setBillingInfo(""); 
+            
+            String timestamp = "N/A";
+            if (job.getTimestamp() != null) {
+                timestamp = TS_FMT.format(job.getTimestamp());
             }
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Error loading billing info from " + BILLING_FILE, "Load Error", JOptionPane.ERROR_MESSAGE);
+            
+            tableModel.addRow(new Object[]{
+                timestamp, 
+                clientEnteredID,
+                job.getJobID(),
+                job.getStatus(),
+                job.getDuration(),
+                job.getDeadline().toString(),
+                job.getRedundancyLevel()
+            });
         }
     }
 
-    private void saveBillingInfo() {
-        clientUser.setBillingInfo(this.billingInfo); 
-        try (FileWriter fw = new FileWriter(BILLING_FILE, false)) {
-            fw.write(this.billingInfo);
-        } catch (IOException ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Error saving billing info file.", "Save Error", JOptionPane.ERROR_MESSAGE);
+    private void refreshJobTable() {
+        loadJobsFromCentralStorage();
+    }
+
+    private void onChangePassword(ActionEvent e) {
+        String oldPass = new String(oldPassField.getPassword());
+        String newPass = new String(newPassField.getPassword());
+        String confirmPass = new String(confirmNewPassField.getPassword());
+
+        if (!clientUser.getPassword().equals(oldPass)) {
+            passStatusLabel.setText("Incorrect old password.");
+            passStatusLabel.setForeground(Color.RED);
+            return;
         }
+
+        if (!newPass.equals(confirmPass)) {
+            passStatusLabel.setText("New passwords do not match.");
+            passStatusLabel.setForeground(Color.RED);
+            return;
+        }
+
+        if (newPass.isEmpty()) {
+            passStatusLabel.setText("Password cannot be empty.");
+            passStatusLabel.setForeground(Color.RED);
+            return;
+        }
+
+        clientUser.setPassword(newPass);
+        DatabaseManager.getInstance().saveUser(clientUser);
+        
+        passStatusLabel.setText("Password updated successfully!");
+        passStatusLabel.setForeground(new Color(0, 150, 0));
+        
+        oldPassField.setText("");
+        newPassField.setText("");
+        confirmNewPassField.setText("");
     }
 
     private void clearForm() {
@@ -1061,12 +931,12 @@ public class ClientGUI extends JPanel {
 
     // --- Billing Dialog ---
     private class BillingInfoDialog extends JDialog {
-        private JTextField nameField;
-        private JTextField cardField;
+        private JTextField holderField;
+        private JTextField numberField;
         private JTextField cvcField;
-        private JTextField expMonthField;
-        private JTextField expYearField;
-        private String savedInfo;
+        private JTextField expiryField;
+        private String[] savedInfo;
+        private boolean isSaved = false;
 
         BillingInfoDialog(Window owner) {
             super(owner, "Add/Edit Billing Info", ModalityType.APPLICATION_MODAL);
@@ -1077,78 +947,64 @@ public class ClientGUI extends JPanel {
             gbc.insets = new Insets(5, 5, 5, 5);
             gbc.fill = GridBagConstraints.HORIZONTAL;
 
-            nameField = new JTextField(20);
-            ((AbstractDocument) nameField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
+            holderField = new JTextField(20);
+            ((AbstractDocument) holderField.getDocument()).setDocumentFilter(new LettersOnlyFilter());
 
-            cardField = new JTextField(16);
-            ((AbstractDocument) cardField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(16));
+            numberField = new JTextField(16);
+            ((AbstractDocument) numberField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(16));
 
             cvcField = new JTextField(3);
             ((AbstractDocument) cvcField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(3));
 
-            expMonthField = new JTextField(2);
-            ((AbstractDocument) expMonthField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
-
-            expYearField = new JTextField(2);
-            ((AbstractDocument) expYearField.getDocument()).setDocumentFilter(new NumbersOnlyFilter(2));
-
-            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Name on Card:"), gbc);
-            gbc.gridx = 1; gbc.gridy = 0; add(nameField, gbc);
+            expiryField = new JTextField(5); // MM/YY
+            
+            gbc.gridx = 0; gbc.gridy = 0; add(new JLabel("Card Holder:"), gbc);
+            gbc.gridx = 1; gbc.gridy = 0; add(holderField, gbc);
+            
             gbc.gridx = 0; gbc.gridy = 1; add(new JLabel("Card Number:"), gbc);
-            gbc.gridx = 1; gbc.gridy = 1; add(cardField, gbc);
+            gbc.gridx = 1; gbc.gridy = 1; add(numberField, gbc);
+            
             gbc.gridx = 0; gbc.gridy = 2; add(new JLabel("CVC:"), gbc);
             gbc.gridx = 1; gbc.gridy = 2; add(cvcField, gbc);
-
-            JPanel expPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-            expPanel.add(expMonthField);
-            expPanel.add(new JLabel("/"));
-            expPanel.add(expYearField);
-
+            
             gbc.gridx = 0; gbc.gridy = 3; add(new JLabel("Expiry (MM/YY):"), gbc);
-            gbc.gridx = 1; gbc.gridy = 3; add(expPanel, gbc);
+            gbc.gridx = 1; gbc.gridy = 3; add(expiryField, gbc);
 
             JButton saveButton = new JButton("Save");
             saveButton.addActionListener(this::onSaveBilling);
             gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2; add(saveButton, gbc);
         }
 
-        public String getSavedInfo() {
+        public String[] getSavedInfo() {
             return savedInfo;
         }
+        
+        public boolean isSaved() {
+            return isSaved;
+        }
 
-        public void prefill(String info) {
-            if (info != null && !info.isEmpty()) {
-                String[] parts = info.split("\\|");
-                if (parts.length == 5) {
-                    nameField.setText(parts[0]);
-                    cardField.setText(parts[1]);
-                    cvcField.setText(parts[2]);
-                    expMonthField.setText(parts[3]);
-                    expYearField.setText(parts[4]);
-                }
-            } else {
-                nameField.setText("");
-                cardField.setText("");
-                cvcField.setText("");
-                expMonthField.setText("");
-                expYearField.setText("");
-            }
+        public void prefill(String holder, String number, String cvc, String expiry) {
+            holderField.setText(holder != null ? holder : "");
+            numberField.setText(number != null ? number : "");
+            cvcField.setText(cvc != null ? cvc : "");
+            expiryField.setText(expiry != null ? expiry : "");
             this.savedInfo = null;
+            this.isSaved = false;
         }
 
         private void onSaveBilling(ActionEvent e) {
-            String name = nameField.getText().trim();
-            String card = cardField.getText().trim();
+            String holder = holderField.getText().trim();
+            String number = numberField.getText().trim();
             String cvc = cvcField.getText().trim();
-            String expMonth = expMonthField.getText().trim();
-            String expYear = expYearField.getText().trim();
+            String expiry = expiryField.getText().trim();
 
-            if (name.isEmpty() || card.length() != 16 || cvc.length() != 3 || expMonth.length() != 2 || expYear.length() != 2) {
+            if (holder.isEmpty() || number.length() != 16 || cvc.length() != 3 || expiry.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "Please fill all fields correctly.\nCard Number must be 16 digits.\nCVC must be 3 digits.", "Validation Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
 
-            this.savedInfo = name + "|" + card + "|" + cvc + "|" + expMonth + "|" + expYear;
+            this.savedInfo = new String[]{holder, number, cvc, expiry};
+            this.isSaved = true;
             JOptionPane.showMessageDialog(this, "Billing Info Saved!");
             dispose(); 
         }

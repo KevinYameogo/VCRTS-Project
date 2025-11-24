@@ -1,17 +1,15 @@
 import java.io.Serializable;
 import java.io.ObjectOutputStream;
 import java.io.ObjectInputStream;
-import java.io.FileOutputStream;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * Server class with request tracking, pending requests management, and user notifications.
@@ -19,10 +17,11 @@ import java.util.HashMap;
  */
 public class Server implements Serializable {
     private static final long serialVersionUID = 2L;
-    private static final String STATE_FILE = "server_state.dat";
+    // private static final String STATE_FILE = "server_state.dat"; // Removed
 
     private final String serverID;
     private final String ipAddress;
+    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     // Server State components (made non-final for loading)
     private List<Job> storageArchive;
@@ -85,83 +84,66 @@ public class Server implements Serializable {
     }
 
     /** Saves the current state of critical server components. */
+    /** Saves the current state of critical server components. */
+    @Deprecated
     public synchronized void saveState() {
-        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(STATE_FILE))) {
-            oos.writeObject(this.storageArchive);
-            oos.writeObject(this.checkpointRepo);
-            oos.writeObject(this.pendingRequests);
-            oos.writeObject(this.requestCounter);
-            oos.writeObject(this.userNotifications);
-            oos.writeObject(this.jobClientMap);
-            oos.writeObject(this.jobSenderMap);
-            oos.writeObject(this.vehicleSenderMap);
-            oos.writeObject(this.vehicleOwnerIdMap);
-            oos.writeObject(this.registeredVehicles);
-            oos.writeObject(this.approvedJobs); 
-            System.out.println("Server state saved.");
-        } catch (IOException e) {
-            System.err.println("Error saving Server state: " + e.getMessage());
-        }
+        // No-op: State is saved to DB immediately on change.
     }
 
     /** Loads the state from file on startup. */
     @SuppressWarnings("unchecked")
+    /** Loads the state from DB on startup. */
     public boolean loadState() {
-        File stateFile = new File(STATE_FILE);
-        if (!stateFile.exists()) return false;
-
-        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(stateFile))) {
-            this.storageArchive = (List<Job>) ois.readObject();
-            this.checkpointRepo = (List<Checkpoint>) ois.readObject();
-            this.pendingRequests = (HashMap<String, Request>) ois.readObject();
-            this.requestCounter = (AtomicInteger) ois.readObject();
-            this.userNotifications = (ConcurrentHashMap<String, List<String>>) ois.readObject();
-
-            this.jobClientMap = (ConcurrentHashMap<String, String>) ois.readObject();
-            this.jobSenderMap = (ConcurrentHashMap<String, String>) ois.readObject();
-
-            this.vehicleSenderMap = (ConcurrentHashMap<String, String>) ois.readObject();
-            this.vehicleOwnerIdMap = (ConcurrentHashMap<String, String>) ois.readObject();
-
-            this.registeredVehicles = (List<Vehicle>) ois.readObject(); 
-            this.approvedJobs = (List<Job>) ois.readObject(); 
-
-            return true;
-        } catch (IOException | ClassNotFoundException e) {
-            System.err.println("Error loading Server state: " + e.getMessage());
-            stateFile.delete();
-            return false;
-        }
+        reloadState();
+        return true;
     }
 
     /**
-     * Method to force reload the in-memory state from the latest saved file state.
-     * Crucial for multi-instance synchronization.
+     * Method to force reload the in-memory state from the DB.
      */
-    @SuppressWarnings("unchecked")
     public synchronized void reloadState() {
-        File stateFile = new File(STATE_FILE);
-        if (!stateFile.exists()) return;
-
-        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(stateFile))) {
-            this.storageArchive = (List<Job>) ois.readObject();
-            this.checkpointRepo = (List<Checkpoint>) ois.readObject();
-            this.pendingRequests = (HashMap<String, Request>) ois.readObject();
-            this.requestCounter = (AtomicInteger) ois.readObject();
-            this.userNotifications = (ConcurrentHashMap<String, List<String>>) ois.readObject();
-
-            this.jobClientMap = (ConcurrentHashMap<String, String>) ois.readObject();
-            this.jobSenderMap = (ConcurrentHashMap<String, String>) ois.readObject();
-
-            this.vehicleSenderMap = (ConcurrentHashMap<String, String>) ois.readObject();
-            this.vehicleOwnerIdMap = (ConcurrentHashMap<String, String>) ois.readObject();
-            this.registeredVehicles = (List<Vehicle>) ois.readObject(); // NEW
-            this.approvedJobs = (List<Job>) ois.readObject(); // NEW
-            
-            System.out.println("Server: State reloaded from disk.");
-        } catch (IOException | ClassNotFoundException e) {
-            System.err.println("Error reloading Server state: " + e.getMessage());
+        DatabaseManager db = DatabaseManager.getInstance();
+        
+        // Load Requests
+        this.pendingRequests = new HashMap<>();
+        List<Request> allRequests = db.getAllRequests();
+        int maxReqId = 0;
+        for (Request r : allRequests) {
+            if ("Pending".equals(r.getStatus())) {
+                this.pendingRequests.put(r.getRequestID(), r);
+            }
+            // Try to parse ID to update counter if needed
+            if (r.getRequestID().startsWith("REQ-")) {
+                try {
+                    int id = Integer.parseInt(r.getRequestID().substring(4));
+                    if (id > maxReqId) maxReqId = id;
+                } catch (NumberFormatException e) {}
+            }
         }
+        this.requestCounter = new AtomicInteger(maxReqId + 1);
+        
+        // Initialize userNotifications map
+        this.userNotifications = new ConcurrentHashMap<>();
+
+        // Load Vehicles and Jobs
+        this.registeredVehicles = db.getAllVehicles();
+        this.approvedJobs = db.getAllJobs(); 
+        
+        // Rebuild Maps
+        this.jobClientMap = new ConcurrentHashMap<>(db.getJobClientMap());
+        this.jobSenderMap = new ConcurrentHashMap<>(db.getJobSenderMap());
+        this.vehicleSenderMap = new ConcurrentHashMap<>(db.getVehicleSenderMap());
+        this.vehicleOwnerIdMap = new ConcurrentHashMap<>(db.getVehicleOwnerIdMap());
+        
+        // Storage Archive
+        this.storageArchive = new ArrayList<>();
+        for (Job j : this.approvedJobs) {
+            if ("Completed".equals(j.getStatus())) {
+                this.storageArchive.add(j);
+            }
+        }
+
+        System.out.println("Server: State reloaded from DB.");
     }
 
     // request mangement
@@ -175,20 +157,15 @@ public class Server implements Serializable {
 
         if (requestType.equals("JOB_SUBMISSION") && data instanceof Job) {
             Job job = (Job) data;
-            // Store the SENDER ID (login ID) for filtering job history.
             jobSenderMap.put(job.getJobID(), senderID);
-
-            // Store the user-entered Client ID for display/CSV.
             String clientEnteredID = job.getJobID().split("-")[0];
             jobClientMap.put(job.getJobID(), clientEnteredID);
-
         } else if (requestType.equals("VEHICLE_REGISTRATION") && data instanceof Vehicle) {
             Vehicle vehicle = (Vehicle) data;
-            // Store the SENDER ID (login ID) for filtering vehicle history.
             vehicleSenderMap.put(vehicle.getVehicleID(), senderID);
         }
 
-        saveState();
+        DatabaseManager.getInstance().saveRequest(request);
         System.out.println("Server: Created request " + requestID + " from " + senderID);
         return request;
     }
@@ -223,12 +200,9 @@ public class Server implements Serializable {
         }
 
         request.approve();
-
-        // Remove from the map once processed to prevent other VCController instances
-        // from processing it (since it's no longer Pending).
         pendingRequests.remove(requestID);
 
-        saveState();
+        DatabaseManager.getInstance().saveRequest(request);
         System.out.println("Server: Approved request " + requestID);
         return true;
     }
@@ -243,12 +217,9 @@ public class Server implements Serializable {
         }
 
         request.reject();
-
-        // Remove from the map once processed to prevent other VCController instances
-        // from processing it (since it's no longer Pending).
         pendingRequests.remove(requestID);
 
-        saveState();
+        DatabaseManager.getInstance().saveRequest(request);
         System.out.println("Server: Rejected request " + requestID);
         return true;
     }
@@ -291,7 +262,7 @@ public class Server implements Serializable {
      */
     public synchronized void mapVehicleOwnerIDForDisplay(String licensePlate, String ownerEnteredID) {
         vehicleOwnerIdMap.put(licensePlate, ownerEnteredID);
-        saveState();
+        // Note: This mapping is transient until vehicle is registered/saved to DB.
         System.out.println("Server: Mapped license " + licensePlate + " to entered Owner ID " + ownerEnteredID);
     }
 
@@ -313,7 +284,8 @@ public class Server implements Serializable {
     public synchronized void storeCheckpoint(Checkpoint checkpoint) {
         if (checkpoint != null) {
             this.checkpointRepo.add(checkpoint);
-            saveState();
+            // Checkpoints are transient for now, or we could add a DB table.
+            // saveState(); 
             System.out.println("Server: Stored checkpoint " + checkpoint.getCheckpointID());
         }
     }
@@ -339,7 +311,7 @@ public class Server implements Serializable {
                 pushNotification(userID, msg);
             }
             pending.clear();
-            saveState();
+            // saveState(); // Not needed as pushNotification handles persistence logic if failed
         }
     }
 
@@ -374,8 +346,9 @@ public class Server implements Serializable {
             }
         } else {
             // If client not connected, use the persistent polling queue as a fallback
-            userNotifications.computeIfAbsent(userID, k -> new ArrayList<>()).add(message);
-            saveState();
+            // userNotifications.computeIfAbsent(userID, k -> new ArrayList<>()).add(message);
+            // saveState();
+            // DatabaseManager handles this.
             System.out.println("Server: Notification queued (no active client) for " + userID);
         }
     }
@@ -390,36 +363,25 @@ public class Server implements Serializable {
             return;
         }
         
-        // STEP 1: ALWAYS add to queue first for guaranteed persistence
-        // This ensures the notification survives even if push fails or client disconnects
-        userNotifications.computeIfAbsent(userID, k -> new ArrayList<>()).add(message);
-        System.out.println("Server: Notification queued for " + userID + ": " + message);
+        // Format message with timestamp
+        String timestamp = TS_FMT.format(LocalDateTime.now());
+        String formattedMessage = "[" + timestamp + "] " + message;
+
+        // Save to DB immediately
+        DatabaseManager.getInstance().addNotification(userID, formattedMessage);
+        System.out.println("Server: Notification saved for " + userID + ": " + formattedMessage);
         
-        // STEP 2: Immediately save state to persist the queue to disk
-        saveState();
-        
-        // STEP 3: Try to push if client is connected (live notification)
+        // Try to push if client is connected
         ObjectOutputStream oos = activeNotificationClients.get(userID);
         if (oos != null) {
             try {
-                oos.writeObject(message);
+                oos.writeObject(formattedMessage);
                 oos.flush();
                 System.out.println("Server PUSH: Live notification sent to " + userID);
-                
-                // STEP 4: Remove from queue since push was successful
-                // Client received it live, so they don't need to poll for it later
-                List<String> notifications = userNotifications.get(userID);
-                if (notifications != null && !notifications.isEmpty()) {
-                    notifications.remove(notifications.size() - 1); // Remove the just-added message
-                    saveState(); // Save again to persist the removal
-                }
             } catch (IOException e) {
-                System.err.println("Server PUSH failed for " + userID + ". Notification remains queued.");
-                // Don't remove from queue - client will retrieve it on next login
+                System.err.println("Server PUSH failed for " + userID);
                 deregisterNotificationClient(userID);
             }
-        } else {
-            System.out.println("Server: Client " + userID + " not connected. Notification queued for retrieval.");
         }
     }
 
@@ -427,27 +389,19 @@ public class Server implements Serializable {
      * Retrieval for polling fallback (used on client connection to load queued notifications).
      */
     public synchronized List<String> getNotifications(String userID) {
-        List<String> notifications = userNotifications.get(userID);
-        if (notifications == null || notifications.isEmpty()) {
-            return new ArrayList<>();
-        }
-
-        List<String> copy = new ArrayList<>(notifications);
-        notifications.clear();
-        saveState();
-        return copy;
+        return DatabaseManager.getInstance().getNotifications(userID);
     }
 
     // Store registered vehicle:
     public synchronized void storeRegisteredVehicle(Vehicle vehicle) {
         if (vehicle != null && !registeredVehicles.contains(vehicle)) {
             registeredVehicles.add(vehicle);
-            saveState();
-            // Save to Database
-            String ownerEnteredID = getVehicleOwnerIDForDisplay(vehicle);
-            if (ownerEnteredID == null) ownerEnteredID = "UNKNOWN"; // Fallback
             
-            String username = getOwnerIDForVehicle(vehicle); // This is the login ID (FK)
+            String ownerEnteredID = vehicle.getOwnerEnteredID();
+            if (ownerEnteredID == null) ownerEnteredID = "UNKNOWN";
+            
+            String username = vehicle.getSenderID();
+            if (username == null) username = "UNKNOWN";
             
             DatabaseManager.getInstance().saveVehicle(vehicle, ownerEnteredID, username);
             System.out.println("Server: Stored registered vehicle " + vehicle.getVehicleID() + " to DB.");
@@ -463,12 +417,12 @@ public class Server implements Serializable {
     public synchronized void storeApprovedJob(Job job) {
         if (job != null && !approvedJobs.contains(job)) {
             approvedJobs.add(job);
-            saveState();
-            // Save to Database
-            String clientEnteredID = getClientIDForJob(job); 
-            if (clientEnteredID == null) clientEnteredID = "UNKNOWN"; // Fallback
             
-            String username = getLoginIDForJob(job); // This is the login ID (FK)
+            String clientEnteredID = job.getClientEnteredID(); 
+            if (clientEnteredID == null) clientEnteredID = "UNKNOWN";
+            
+            String username = job.getSenderID();
+            if (username == null) username = "UNKNOWN";
             
             DatabaseManager.getInstance().saveJob(job, clientEnteredID, username);
             System.out.println("Server: Stored approved job " + job.getJobID() + " to DB.");
@@ -484,12 +438,12 @@ public class Server implements Serializable {
     public synchronized void storeCompletedJob(Job job) {
         if (job != null) {
             storageArchive.add(job);
-            saveState();
-            // Update in Database
-            String clientEnteredID = getClientIDForJob(job);
+            
+            String clientEnteredID = job.getClientEnteredID();
             if (clientEnteredID == null) clientEnteredID = "UNKNOWN";
             
-            String username = getLoginIDForJob(job);
+            String username = job.getSenderID();
+            if (username == null) username = "UNKNOWN";
             
             DatabaseManager.getInstance().saveJob(job, clientEnteredID, username);
             System.out.println("Server: Stored completed job " + job.getJobID() + " to DB.");

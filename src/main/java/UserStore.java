@@ -1,7 +1,7 @@
 import javax.swing.JOptionPane;
 
 // Handles saving and loading the User object via DatabaseManager
-public class FileBasedUserStore {
+public class UserStore {
     
     /**
      * Saves the User object to the database.

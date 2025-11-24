@@ -199,8 +199,8 @@ public class RequestsFrame extends JFrame {
                 Job job = (Job) req.getData();
                 
                 // Get correct Client ID
-                String clientID = server.getClientIDForJob(job);
-                if (clientID == null) clientID = req.getSenderID(); // Fallback
+                String clientID = job.getClientEnteredID();
+                if (clientID == null || clientID.equals("UNKNOWN")) clientID = req.getSenderID(); // Fallback
                 
                 String status = job.getStatus();
                 if (status == null || status.equalsIgnoreCase("Pending")) {
@@ -222,8 +222,8 @@ public class RequestsFrame extends JFrame {
                 Vehicle vehicle = (Vehicle) req.getData();
                 
                 // Get correct Owner ID
-                String ownerID = server.getVehicleOwnerIDForDisplay(vehicle);
-                if (ownerID == null) ownerID = req.getSenderID(); // Fallback
+                String ownerID = vehicle.getOwnerEnteredID();
+                if (ownerID == null || ownerID.equals("UNKNOWN")) ownerID = req.getSenderID(); // Fallback
                 
                 vehicleTableModel.addRow(new Object[]{
                     req.getRequestID(),

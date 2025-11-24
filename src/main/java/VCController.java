@@ -8,7 +8,6 @@ import java.util.HashMap;
 import java.io.*; 
 import java.util.Objects; 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 
 /**
  * VCController with client-server request processing.
@@ -17,10 +16,8 @@ import java.time.format.DateTimeFormatter;
 public class VCController implements Serializable {
   
   private static final long serialVersionUID = 2L; 
-  private static final String STATE_FILE = "vccontroller_state.dat";
-  // Constants for CSV updates
-  private static final String JOBS_CSV = "jobs.csv"; 
-  private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+  // private static final String STATE_FILE = "vccontroller_state.dat"; // Removed
+  // private static final String STATE_FILE = "vccontroller_state.dat"; // Removed
 
   private List<Vehicle> availableVehicles; 
   private List<Vehicle> activeVehicles;
@@ -38,23 +35,11 @@ public class VCController implements Serializable {
   public VCController(Server server){
     this.systemServer = Objects.requireNonNull(server, "Server cannot be null.");
     
-    if (!loadState()) {
-      this.availableVehicles = new ArrayList<>();
-      this.activeVehicles = new ArrayList<>();
-      this.pendingJobs = new LinkedList<>();
-      this.inProgressJobs = new ArrayList<>();
-      this.archivedJobs = new ArrayList<>();
-      
-      this.jobVehicleMap = new HashMap<>();
-      this.vehicleJobMap = new HashMap<>();
-      System.out.println("VCController initialized fresh.");
-    } else {
-      System.out.println("VCController state successfully loaded.");
-      
-      // Ensure transient maps are re-created if necessary 
-      if (this.jobVehicleMap == null) this.jobVehicleMap = new HashMap<>();
-      if (this.vehicleJobMap == null) this.vehicleJobMap = new HashMap<>();
-    }
+    reloadState();
+    
+    // Ensure transient maps are re-created if necessary 
+    if (this.jobVehicleMap == null) this.jobVehicleMap = new HashMap<>();
+    if (this.vehicleJobMap == null) this.vehicleJobMap = new HashMap<>();
     
     scheduleJobs();
   }
@@ -66,44 +51,65 @@ public class VCController implements Serializable {
     this.controllerGUI = gui;
   }
 
-  /** Saves the current state */
-  private synchronized void saveState() {
-      try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(STATE_FILE))) {
-          oos.writeObject(this.pendingJobs);
-          oos.writeObject(this.inProgressJobs);
-          oos.writeObject(this.archivedJobs);
-          oos.writeObject(this.jobVehicleMap);
-          oos.writeObject(this.vehicleJobMap);
-          System.out.println("VCController state saved.");
-      } catch (IOException e) {
-          System.err.println("Error saving VCController state: " + e.getMessage());
-      }
-  }
+
 
   /** Loads the state from file */
-  @SuppressWarnings("unchecked")
-  private boolean loadState() {
-      File stateFile = new File(STATE_FILE);
-      if (!stateFile.exists()) return false;
-      
-      try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(stateFile))) {
-          this.pendingJobs = (LinkedList<Job>) ois.readObject();
-          this.inProgressJobs = (List<Job>) ois.readObject();
-          this.archivedJobs = (List<Job>) ois.readObject();
-          this.jobVehicleMap = (Map<Job, List<Vehicle>>) ois.readObject();
-          this.vehicleJobMap = (Map<Vehicle, Job>) ois.readObject();
-          
-          this.availableVehicles = new ArrayList<>();
-          this.activeVehicles = new ArrayList<>();
-          this.activeVehicles.addAll(this.vehicleJobMap.keySet());
-          
-          System.out.println("Loaded " + this.activeVehicles.size() + " active vehicles from state.");
-          return true;
-      } catch (IOException | ClassNotFoundException e) {
-          System.err.println("Error loading VCController state: " + e.getMessage());
-          stateFile.delete(); 
-          return false;
+  /** Reloads state from Server (DB) */
+  public synchronized void reloadState() {
+      this.availableVehicles = new ArrayList<>();
+      this.activeVehicles = new ArrayList<>();
+      this.pendingJobs = new LinkedList<>();
+      this.inProgressJobs = new ArrayList<>();
+      this.archivedJobs = new ArrayList<>();
+      this.jobVehicleMap = new HashMap<>();
+      this.vehicleJobMap = new HashMap<>();
+
+      // Load Jobs
+      List<Job> allJobs = systemServer.getAllApprovedJobs(); // This loads from DB
+      for (Job job : allJobs) {
+          switch (job.getStatus()) {
+              case "Pending":
+                  pendingJobs.add(job);
+                  break;
+              case "In-Progress":
+                  inProgressJobs.add(job);
+                  break;
+              case "Completed":
+                  archivedJobs.add(job);
+                  break;
+              default:
+                  // Handle others if any
+                  break;
+          }
       }
+
+      // Load Vehicles
+      List<Vehicle> allVehicles = systemServer.getAllRegisteredVehicles(); // This loads from DB
+      for (Vehicle v : allVehicles) {
+          if ("Available".equalsIgnoreCase(v.getStatus())) {
+              availableVehicles.add(v);
+          } else if ("Active".equalsIgnoreCase(v.getStatus()) || "Busy".equalsIgnoreCase(v.getCpuStatus())) {
+              activeVehicles.add(v);
+              
+              // Re-link with Job
+              String jobId = v.getCurrentJobID();
+              if (jobId != null) {
+                  Job job = findJob(jobId);
+                  if (job != null) {
+                      vehicleJobMap.put(v, job);
+                      jobVehicleMap.computeIfAbsent(job, k -> new ArrayList<>()).add(v);
+                  }
+              }
+          }
+      }
+      
+      System.out.println("VCController state reloaded from DB.");
+  }
+  
+  private Job findJob(String jobId) {
+      for (Job j : inProgressJobs) if (j.getJobID().equals(jobId)) return j;
+      for (Job j : pendingJobs) if (j.getJobID().equals(jobId)) return j;
+      return null;
   }
   
   // REQUEST PROCESSING METHODS 
@@ -118,8 +124,24 @@ public class VCController implements Serializable {
       
       // Acknowledge receipt immediately
       request.acknowledge();
+      
+      // Save acknowledged state to DB
+      DatabaseManager.getInstance().saveRequest(request);
+      
+      // Notify User
+      String msg = "Job request " + request.getRequestID() + " received and acknowledged";
+      if (request.getData() instanceof Job) {
+          Job j = (Job) request.getData();
+          // User requested removing (clientid:...) and ensuring Job ID is displayed
+          // The requestID is already unique, but maybe they want the Job ID?
+          // "job_id displayed in the requests frame in the notification"
+          // Let's include the Job ID (which includes the client part)
+          msg = "Job request " + j.getJobID() + " received and acknowledged by server";
+      }
+      systemServer.notifyUser(request.getSenderID(), msg);
+      
       if (controllerGUI != null) {
-          controllerGUI.addNotification("Job request received from " + request.getSenderID());
+          controllerGUI.addNotification(msg);
       }
       return true;
   }
@@ -148,6 +170,10 @@ public class VCController implements Serializable {
           controllerGUI.addNotification("Job " + job.getJobID() + " approved and added to queue");
           controllerGUI.logToFile("Job " + job.getJobID() + " approved by VC Controller");
       }
+            // Notify user
+        String senderID = request.getSenderID();
+        String notificationMsg = "Your job " + job.getJobID() + " has been APPROVED and added to the queue.";
+        systemServer.notifyUser(senderID, notificationMsg);
       
       System.out.println("VC Controller: Approved job " + job.getJobID());
   }
@@ -163,10 +189,20 @@ public class VCController implements Serializable {
       
       systemServer.rejectRequest(requestID);
       
-      if (controllerGUI != null) {
-          controllerGUI.addNotification("Job request " + requestID + " rejected");
-          controllerGUI.logToFile("Job request " + requestID + " rejected by VC Controller");
+      String msg = "Job request " + requestID + " rejected";
+      if (request.getData() instanceof Job) {
+          Job j = (Job) request.getData();
+          msg = "Your job " + j.getJobID() + " has been REJECTED.";
       }
+      
+      if (controllerGUI != null) {
+          controllerGUI.addNotification(msg);
+          controllerGUI.logToFile(msg + " by VC Controller");
+      }
+      
+      // Notify User
+      String senderID = request.getSenderID();
+      systemServer.notifyUser(senderID, msg);
       
       System.out.println("VC Controller: Rejected job request " + requestID);
   }
@@ -180,8 +216,20 @@ public class VCController implements Serializable {
       }
       
       request.acknowledge();
+      
+      // Save acknowledged state to DB
+      DatabaseManager.getInstance().saveRequest(request);
+      
+      // Notify User
+      String msg = "Vehicle registration " + request.getRequestID() + " received and acknowledged";
+      if (request.getData() instanceof Vehicle) {
+          Vehicle v = (Vehicle) request.getData();
+          msg = "Vehicle registration " + v.getVehicleID() + " received and acknowledged by server";
+      }
+      systemServer.notifyUser(request.getSenderID(), msg);
+      
       if (controllerGUI != null) {
-          controllerGUI.addNotification("Vehicle registration received from " + request.getSenderID());
+          controllerGUI.addNotification(msg);
       }
       
       return true;
@@ -209,6 +257,10 @@ public class VCController implements Serializable {
           controllerGUI.addNotification("Vehicle " + vehicle.getVehicleID() + " approved and recruited");
           controllerGUI.logToFile("Vehicle " + vehicle.getVehicleID() + " registered successfully");
       }
+            // Notify user
+        String senderID = request.getSenderID();
+        String notificationMsg = "Your vehicle " + vehicle.getVehicleID() + " has been APPROVED and registered.";
+        systemServer.notifyUser(senderID, notificationMsg);
       
       System.out.println("VC Controller: Approved vehicle " + vehicle.getVehicleID());
   }
@@ -224,10 +276,19 @@ public class VCController implements Serializable {
       
       systemServer.rejectRequest(requestID);
       
-      if (controllerGUI != null) {
-          controllerGUI.addNotification("Vehicle request " + requestID + " rejected");
-          controllerGUI.logToFile("Vehicle request " + requestID + " rejected by VC Controller");
+      String msg = "Vehicle request " + requestID + " rejected";
+      if (request.getData() instanceof Vehicle) {
+          Vehicle v = (Vehicle) request.getData();
+          msg = "Vehicle " + v.getVehicleID() + " rejected";
       }
+
+      if (controllerGUI != null) {
+          controllerGUI.addNotification(msg);
+          controllerGUI.logToFile(msg + " by VC Controller");
+      }
+      
+      // Notify User
+      systemServer.notifyUser(request.getSenderID(), msg);
       
       System.out.println("VC Controller: Rejected vehicle request " + requestID);
   }
@@ -236,7 +297,6 @@ public class VCController implements Serializable {
   public synchronized void addJob(Job job){ 
     pendingJobs.add(job);
     System.out.println("Job " + job.getJobID() + " added to pending queue.");
-    saveState(); 
     scheduleJobs();
   }
 
@@ -254,10 +314,11 @@ public class VCController implements Serializable {
       inProgressJobs.add(jobToAssign);
       jobToAssign.updateStatus("In-Progress");
       
-      updateJobCsvStatus(jobToAssign);
+      // Update status in DB
+      systemServer.storeApprovedJob(jobToAssign);
       
       System.out.println("Job " + jobToAssign.getJobID() + " started.");
-      saveState();
+      // saveState();
     }else{
       System.out.println("Job " + nextJob.getJobID() + " postponed. Waiting for " 
       + requiredVehicles + " vehicle(s).");
@@ -320,13 +381,10 @@ public class VCController implements Serializable {
     archivedJobs.add(job);
     job.updateStatus("Completed");
 
-    updateJobCsvStatus(job);
-
     System.out.println("Job " + job.getJobID() + " marked as 'Completed'.");
     
     this.transferJobToServer(job); 
     
-    saveState(); 
     scheduleJobs();
   }
   
@@ -340,7 +398,9 @@ public class VCController implements Serializable {
     
     if(availableVehicles.remove(vehicle)){
       System.out.println("Vehicle removed from available pool");
-      saveState();
+      // Update DB status
+      vehicle.restoreState("Departed", "Idle", "Free", null); 
+      systemServer.storeRegisteredVehicle(vehicle);
       return;
     }
 
@@ -379,8 +439,6 @@ public class VCController implements Serializable {
                     pendingJobs.add(interruptedJob);
                     interruptedJob.updateStatus("Pending(Interrupted)");
 
-                    updateJobCsvStatus(interruptedJob); 
-
                     jobVehicleMap.remove(interruptedJob);
                     System.out.println("Job " + interruptedJob.getJobID() 
                      + " re-queued. No valid checkpoint found for recovery.");
@@ -390,12 +448,10 @@ public class VCController implements Serializable {
                 pendingJobs.add(interruptedJob);
                 interruptedJob.updateStatus("Pending(Interrupted)");
                 
-                updateJobCsvStatus(interruptedJob); 
-                
                 jobVehicleMap.remove(interruptedJob);
                 System.out.println("Job " + interruptedJob.getJobID() + " re-queued. No vehicles available.");
             }
-            saveState(); 
+            // saveState(); 
         } else {
              System.out.println("Job " + interruptedJob.getJobID() 
              + " continues on " + remainingVehicles.size() + " vehicle(s).");
@@ -429,7 +485,6 @@ public class VCController implements Serializable {
     this.availableVehicles.add(vehicle);
     System.out.println("New vehicle recruited: " + vehicle.getVehicleID() 
     + ". Now available for jobs.");
-    saveState(); 
     scheduleJobs();
   }
 
@@ -544,100 +599,5 @@ public class VCController implements Serializable {
   
   public Server getServer() {
     return systemServer;
-  }
-  
-  //  CSV UPDATE HELPER (Synchronized for Thread Safety)
-
-  /**
-   * Reads jobs.csv, updates line the status for a specific job
-   */
-  private synchronized void updateJobCsvStatus(Job job) {
-      File inputFile = new File(JOBS_CSV);
-      if (!inputFile.exists()) {
-          System.err.println("Warning: Cannot update CSV status. File does not exist: " + JOBS_CSV);
-          return;
-      }
-
-      File tempFile = new File(JOBS_CSV + ".tmp");
-      String line;
-      int jobIDIndex = -1;
-      int statusIndex = -1;
-      List<String> fileContent = new ArrayList<>();
-      
-      try (BufferedReader reader = new BufferedReader(new FileReader(inputFile));
-           PrintWriter writer = new PrintWriter(new FileWriter(tempFile))) {
-          
-          // 1. Read Header and determine indices
-          if ((line = reader.readLine()) != null) {
-              writer.println(line); // Write header immediately to temp file
-              String[] headers = line.split(",");
-              for (int i = 0; i < headers.length; i++) {
-                  String header = headers[i].trim().replace("\"", ""); // Clean header
-                  if (header.equalsIgnoreCase("job_id")) {
-                      jobIDIndex = i;
-                  } else if (header.equalsIgnoreCase("status")) {
-                      statusIndex = i;
-                  }
-              }
-              if (jobIDIndex == -1 || statusIndex == -1) {
-                  System.err.println("Error: jobs.csv header is missing 'job_id' or 'status'. Cannot update.");
-                  return;
-              }
-          } else {
-              return; // File is empty
-          }
-
-          // 2. Read remaining lines, find and update the target line
-          while ((line = reader.readLine()) != null) {
-              String[] parts = line.split(",");
-              
-              if (parts.length > jobIDIndex && parts[jobIDIndex].contains(job.getJobID())) {
-                  // Found the matching job line. Reconstruct the line with the new status.
-                  
-                  StringBuilder newLine = new StringBuilder();
-                  for (int i = 0; i < parts.length; i++) {
-                      String part = parts[i];
-                      if (i == statusIndex) {
-                          // Insert the new status
-                          newLine.append(escape(job.getStatus())); 
-                      } else {
-                          // Keep the original part
-                          newLine.append(part);
-                      }
-                      if (i < parts.length - 1) {
-                          newLine.append(",");
-                      }
-                  }
-                  writer.println(newLine.toString());
-              } else {
-                  writer.println(line); // Keep the original line
-              }
-          }
-      } catch (IOException e) {
-          System.err.println("Error updating jobs.csv: " + e.getMessage());
-          // In case of an error, ensures the temp file is cleaned up if partially written
-          tempFile.delete(); 
-          return;
-      }
-      
-      // 3. Atomically replace the original file
-      if (!inputFile.delete()) {
-          System.err.println("Error: Could not delete original jobs.csv.");
-          tempFile.delete();
-          return;
-      }
-      if (!tempFile.renameTo(inputFile)) {
-          System.err.println("Error: Could not rename temp file to jobs.csv.");
-      } else {
-          System.out.println("jobs.csv: status for " + job.getJobID() + " updated to " + job.getStatus());
-      }
-  }
-
-  private String escape(String s) {
-      if (s == null) return "";
-      // Simple logic check for the necessary escaping character
-      boolean need = s.contains(",") || s.contains("\"") || s.contains("\n");
-      String v = need ? "\"" + s.replace("\"", "\"\"") + "\"" : s;
-      return v;
   }
 }

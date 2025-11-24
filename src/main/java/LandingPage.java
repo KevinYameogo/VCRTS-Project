@@ -240,7 +240,7 @@ public class LandingPage extends JFrame {
     private User loadUserOrAuthenticate(String username, String password, String role) {
         
         //Try to load user from file 
-        User userFromFile = FileBasedUserStore.loadUser(username, role);
+        User userFromFile = UserStore.loadUser(username, role);
         
         if (userFromFile != null) {
             // File Found: Authenticate against the file-stored password
@@ -265,10 +265,10 @@ public class LandingPage extends JFrame {
             // SUCCESS: Initial login using the hardcoded password. 
             // Return a temporary object. The user must use 'Generate Pass' to persist this user.
              if (role.equals("Client")) {
-                Client newClient = new Client(username, "Initial Client User", targetPassword, ""); 
+                Client newClient = new Client(username, "Initial Client User", targetPassword, "", "", "", ""); 
                 return newClient;
             } else {
-                Owner newOwner = new Owner(username, "Initial Vehicle Owner", targetPassword, ""); 
+                Owner newOwner = new Owner(username, "Initial Vehicle Owner", targetPassword, "", "", "", ""); 
                 return newOwner;
             }
         }
@@ -291,7 +291,7 @@ public class LandingPage extends JFrame {
 
         // Check if user already exists based on the file.
         // If it exists, they should use the file-stored password.
-        if (FileBasedUserStore.loadUser(username, role) != null) {
+        if (UserStore.loadUser(username, role) != null) {
             tempPassDisplayArea.setText("Error: User file already exists. Please log in.");
             tempPassDisplayArea.setBackground(new Color(255, 200, 200));
             return;
@@ -302,15 +302,15 @@ public class LandingPage extends JFrame {
 
         // Ensure the correct subclass is instantiated for saving
         if (role.equals("Client")) {
-            Client newClient = new Client(username, "Client User", tempPassword, ""); 
+            Client newClient = new Client(username, "Client User", tempPassword, "", "", "", ""); 
             newUser = newClient;
         } else {
-            Owner newOwner = new Owner(username, "Vehicle Owner", tempPassword, ""); 
+            Owner newOwner = new Owner(username, "Vehicle Owner", tempPassword, "", "", "", ""); 
             newUser = newOwner;
         }
         
         // Save the new user object with the temporary password immediately 
-        FileBasedUserStore.saveUser(newUser);
+        UserStore.saveUser(newUser);
 
         tempPassDisplayArea.setBackground(new Color(200, 255, 200));
         tempPassDisplayArea.setText(

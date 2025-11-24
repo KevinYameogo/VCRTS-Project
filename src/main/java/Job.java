@@ -13,18 +13,28 @@ public class Job implements Serializable {
     
     private String computationResult; 
 
+    private String clientEnteredID;
+    private String senderID; 
+
     private final int durationInHours;
     private final LocalDateTime deadline;
     
     // constructor 
-    public Job(String jobID, int durationInHours, int redundancyLevel, LocalDateTime deadline) {
+    public Job(String jobID, String clientEnteredID, String senderID, int durationInHours, int redundancyLevel, LocalDateTime deadline) {
         this.jobID = jobID;
+        this.clientEnteredID = clientEnteredID;
+        this.senderID = senderID;
         this.status = "Pending"; 
         this.redundancyLevel = redundancyLevel;
         this.durationInHours = durationInHours;
         this.deadline = deadline;
         this.jobData = "Default Job Data"; //placeholder
         this.computationResult = "N/A";    //placeholder
+    }
+
+    // Legacy constructor for backward compatibility (if needed during refactor)
+    public Job(String jobID, int durationInHours, int redundancyLevel, LocalDateTime deadline) {
+        this(jobID, "UNKNOWN", "UNKNOWN", durationInHours, redundancyLevel, deadline);
     }
     
     // This is used by VCController when loading a job from persistence to set the stored status.
@@ -78,5 +88,23 @@ public class Job implements Serializable {
     
     public LocalDateTime getDeadline(){
         return deadline;
+    }
+
+    private LocalDateTime timestamp;
+
+    public LocalDateTime getTimestamp() {
+        return timestamp;
+    }
+
+    public void setTimestamp(LocalDateTime timestamp) {
+        this.timestamp = timestamp;
+    }
+
+    public String getClientEnteredID() {
+        return clientEnteredID;
+    }
+
+    public String getSenderID() {
+        return senderID;
     }
 }

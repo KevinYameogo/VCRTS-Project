@@ -4,7 +4,7 @@ import java.io.Serializable;
 public class Vehicle implements Serializable {
     private static final long serialVersionUID = 1L; 
     
-    private final String vehicleID;         // SAME as licensePlate
+    private final String vehicleID;         
     private final String make;
     private final String model;
     private final int year; 

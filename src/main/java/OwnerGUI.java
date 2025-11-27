@@ -80,8 +80,7 @@ public class OwnerGUI extends JPanel {
         this.controller = controller;
         this.server = controller.getServer();
         this.submittedRequests = new HashMap<>();
-        
-        // this.paymentInfo = ownerUser.getPaymentInfo(); // Removed
+    
         this.PAYMENT_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_payment.dat";
         this.NOTIFICATION_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_notifications.txt";
 
@@ -140,7 +139,7 @@ public class OwnerGUI extends JPanel {
         
         loadVehiclesFromCentralStorage(); 
         loadPaymentInfo();
-        loadNotifications(); // Re-enabled to show persistent history  
+        loadNotifications();  
         
         // Start persistent notification listener
         startNotificationClient();
@@ -162,9 +161,6 @@ public class OwnerGUI extends JPanel {
             // Reconnect GUI callbacks to the existing client
             backgroundNotificationClient.setNotificationCallback(this::addNotification);
             
-            // Load any queued notifications from server
-            // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
-            
             // Start status refresh timer
             startStatusRefreshTimer();
             return;
@@ -181,9 +177,6 @@ public class OwnerGUI extends JPanel {
         notificationThread = new Thread(backgroundNotificationClient);
         notificationThread.setDaemon(false); // NOT a daemon - stays alive after GUI closes
         notificationThread.start();
-        
-        // Load any queued notifications from server
-        // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
         
         // Start status refresh timer
         startStatusRefreshTimer();
@@ -284,10 +277,6 @@ public class OwnerGUI extends JPanel {
             System.out.println("NotificationClient (Owner): Shutdown for " + userID);
         }
         
-        //
-        private void saveNotificationToFile(String notification) {
-            // Deprecated: File persistence removed.
-        }
     }
     
     @FunctionalInterface
@@ -410,14 +399,9 @@ public class OwnerGUI extends JPanel {
                 badgeLabel.setText(String.valueOf(notificationCount));
                 badgeLabel.setVisible(true);
             }
-            
-            // DatabaseManager.getInstance().addNotification REMOVED to prevent duplicates
         });
     }
 
-    // Also update the saveNotifications method to ensure count is always saved:
-
-    private void saveNotifications() {}
 
     private void resetNotificationBadge() {
         notificationCount = 0;
@@ -577,7 +561,6 @@ public class OwnerGUI extends JPanel {
                 backgroundNotificationClient.setNotificationCallback(null);
             }
             
-            saveNotifications();
             onLogout.run();
         });
         

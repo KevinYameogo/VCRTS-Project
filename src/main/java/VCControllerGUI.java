@@ -25,10 +25,6 @@ public class VCControllerGUI extends JPanel {
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    // CSV filenames (global, centralized storage owned by VC Controller)
-    // CSV filenames removed - using Database
-
-
     public VCControllerGUI(VCController controller, Server server, Runnable onBack) {
         this.controller = controller;
         this.server = server;
@@ -97,11 +93,10 @@ public class VCControllerGUI extends JPanel {
         backButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         backButton.addActionListener((ActionEvent e) -> {
-            // Stop the timer and save state before leaving
+            // Stop the timer
             stopTimer();
             stopTimer();
-            // saveNotifications(); // Removed file save
-            server.saveState();
+            // server.saveState();
             if (onBack != null) {
                 onBack.run();
             }
@@ -218,13 +213,11 @@ public class VCControllerGUI extends JPanel {
     }
 
     /**
-     * Refreshes the pending requests - No longer updates a local table here.
-     * Kept for timer compatibility or background checks if needed.
+     * Refreshes the pending requests .
      */
     private void refreshPendingRequests() {
         // Reload server state to ensure we see approvals/rejections made in other instances.
         server.reloadState();
-        // Logic moved to RequestsFrame
     }
 
     private JPanel createNotificationsPanel() {
@@ -251,9 +244,7 @@ public class VCControllerGUI extends JPanel {
         JButton clearButton = new JButton("Clear All");
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
-            // We might want to clear DB logs too, but user didn't explicitly ask for 'clear' functionality to be migrated.
-            // For now, just clearing the view. If we want to clear DB, we'd need a clearVCNotifications() method in DBManager.
-            // saveNotifications(); // Removed file save
+            DatabaseManager.getInstance().clearVCNotifications();
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -465,12 +456,7 @@ public class VCControllerGUI extends JPanel {
         });
     }
 
-    // CSV HELPERS REMOVED
-
-
     //  PERSISTENT NOTIFICATION METHODS 
-
-
 
     /** Loads notifications from DB when GUI starts. */
     private void loadNotifications() {
@@ -484,7 +470,7 @@ public class VCControllerGUI extends JPanel {
         }
     }
 
-    // PUBLIC METHODS FOR ACTION HANDLING (Called by RequestsFrame)
+    // Methods for action handling (Called by RequestsFrame)
 
     public synchronized void handleAccept(String requestID) {
         Request req = server.getRequest(requestID);
@@ -493,39 +479,21 @@ public class VCControllerGUI extends JPanel {
             return;
         }
 
-        String senderId = req.getSenderID(); // User's login ID
+        String senderId = req.getSenderID(); // 
 
         if (req.getRequestType().equals("JOB_SUBMISSION")) {
             Job job = (Job) req.getData();
-            
-            // Build notification message
-            // String notificationMsg = "Your job " + job.getJobID() + " has been APPROVED and added to the queue.";
-            
-            // Send notification 
-            // server.notifyUser(senderId, notificationMsg); // Removed to prevent duplicate
-            
-            // Approve in controller/server (adds job to queue)
+            // Approve 
             controller.approveJobSubmission(requestID);
-
-            // CSV WRITE removed - Database only
             
             addNotification("Job " + job.getJobID() + " APPROVED");
             logToFile("Job " + job.getJobID() + " approved");
 
         } else if (req.getRequestType().equals("VEHICLE_REGISTRATION")) {
             Vehicle vehicle = (Vehicle) req.getData();
-            
-            // Build notification message
-            // String notificationMsg = "Your vehicle " + vehicle.getVehicleID() + " has been APPROVED and registered.";
-            
-            // Send notification 
-            // server.notifyUser(senderId, notificationMsg); // Removed to prevent duplicate
-            
+        
             // Approve in controller/server (recruits vehicle)
             controller.approveVehicleRegistration(requestID);
-
-            // CSV WRITE: only on accept
-            // appendApprovedVehicleToCSV(vehicle, senderId); // Removed
             
             addNotification("Vehicle " + vehicle.getVehicleID() + " APPROVED");
             logToFile("Vehicle " + vehicle.getVehicleID() + " approved and stored to DB");
@@ -547,32 +515,18 @@ public class VCControllerGUI extends JPanel {
         if (req.getRequestType().equals("JOB_SUBMISSION")) {
             Job job = (Job) req.getData();
             
-            // Build notification message
-            // String notificationMsg = "Your job request " + job.getJobID() + " has been REJECTED.";
-            
-            // Send notification 
-            // server.notifyUser(senderId, notificationMsg); // Removed to prevent duplicate
-            
-            // Reject in controller/server (removes from server's pending map)
+            // Reject 
             controller.rejectJobSubmission(requestID);
 
-            // NO CSV WRITE on reject
             addNotification("Job request " + job.getJobID() + " REJECTED");
             logToFile("Job request " + job.getJobID() + " rejected");
 
         } else if (req.getRequestType().equals("VEHICLE_REGISTRATION")) {
             Vehicle vehicle = (Vehicle) req.getData();
             
-            // Build notification message
-            // String notificationMsg = "Your vehicle registration " + vehicle.getVehicleID() + " has been REJECTED.";
-            
-            // Send notification 
-            // server.notifyUser(senderId, notificationMsg); // Removed to prevent duplicate
-            
-            // Reject in controller/server (removes from server's pending map)
+            // Reject 
             controller.rejectVehicleRegistration(requestID);
 
-            // NO CSV WRITE on reject
             addNotification("Vehicle " + vehicle.getVehicleID() + " REJECTED");
             logToFile("Vehicle " + vehicle.getVehicleID() + " rejected");
         }

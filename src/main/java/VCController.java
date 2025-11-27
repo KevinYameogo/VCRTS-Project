@@ -16,8 +16,6 @@ import java.time.LocalDateTime;
 public class VCController implements Serializable {
   
   private static final long serialVersionUID = 2L; 
-  // private static final String STATE_FILE = "vccontroller_state.dat"; // Removed
-  // private static final String STATE_FILE = "vccontroller_state.dat"; // Removed
 
   private List<Vehicle> availableVehicles; 
   private List<Vehicle> activeVehicles;
@@ -29,7 +27,7 @@ public class VCController implements Serializable {
   private Map<Job, List<Vehicle>> jobVehicleMap; 
   private Map<Vehicle, Job> vehicleJobMap;
   
-  // GUI reference for notifications(non-seriazable)
+  // GUI reference for notifications
   private transient VCControllerGUI controllerGUI;
 
   public VCController(Server server){
@@ -52,8 +50,6 @@ public class VCController implements Serializable {
   }
 
 
-
-  /** Loads the state from file */
   /** Reloads state from Server (DB) */
   public synchronized void reloadState() {
       this.availableVehicles = new ArrayList<>();
@@ -78,7 +74,6 @@ public class VCController implements Serializable {
                   archivedJobs.add(job);
                   break;
               default:
-                  // Handle others if any
                   break;
           }
       }
@@ -132,10 +127,6 @@ public class VCController implements Serializable {
       String msg = "Job request " + request.getRequestID() + " received and acknowledged";
       if (request.getData() instanceof Job) {
           Job j = (Job) request.getData();
-          // User requested removing (clientid:...) and ensuring Job ID is displayed
-          // The requestID is already unique, but maybe they want the Job ID?
-          // "job_id displayed in the requests frame in the notification"
-          // Let's include the Job ID (which includes the client part)
           msg = "Job request " + j.getJobID() + " received and acknowledged by server";
       }
       systemServer.notifyUser(request.getSenderID(), msg);
@@ -156,7 +147,7 @@ public class VCController implements Serializable {
           return;
       }
       
-      // Approve in server
+      // Approve 
       systemServer.approveRequest(requestID);
       
       // Add job to controller
@@ -257,7 +248,7 @@ public class VCController implements Serializable {
           controllerGUI.addNotification("Vehicle " + vehicle.getVehicleID() + " approved and recruited");
           controllerGUI.logToFile("Vehicle " + vehicle.getVehicleID() + " registered successfully");
       }
-            // Notify user
+        // Notify user
         String senderID = request.getSenderID();
         String notificationMsg = "Your vehicle " + vehicle.getVehicleID() + " has been APPROVED and registered.";
         systemServer.notifyUser(senderID, notificationMsg);
@@ -318,7 +309,7 @@ public class VCController implements Serializable {
       systemServer.storeApprovedJob(jobToAssign);
       
       System.out.println("Job " + jobToAssign.getJobID() + " started.");
-      // saveState();
+
     }else{
       System.out.println("Job " + nextJob.getJobID() + " postponed. Waiting for " 
       + requiredVehicles + " vehicle(s).");
@@ -451,7 +442,7 @@ public class VCController implements Serializable {
                 jobVehicleMap.remove(interruptedJob);
                 System.out.println("Job " + interruptedJob.getJobID() + " re-queued. No vehicles available.");
             }
-            // saveState(); 
+
         } else {
              System.out.println("Job " + interruptedJob.getJobID() 
              + " continues on " + remainingVehicles.size() + " vehicle(s).");
@@ -566,8 +557,6 @@ public class VCController implements Serializable {
   /**
    * Returns a list of all registered vehicles associated with the given owner ID.
    * This is used by OwnerGUI to display persistent vehicle registration history.
-   * @param ownerID The ID of the owner whose vehicle history is requested.
-   * @return List<Vehicle> A list of vehicles registered by the owner.
    */
   public synchronized List<Vehicle> getOwnerVehicleHistory(String ownerID) {
       return DatabaseManager.getInstance().getOwnerVehicleHistory(ownerID);
@@ -582,8 +571,6 @@ public class VCController implements Serializable {
   /**
    * Returns a list of all jobs (Pending, In-Progress, Archived) associated 
    * with the given client ID (which is the login ID).
-   * @param loginID The login ID of the client whose job history is requested.
-   * @return List<Job> A list of jobs submitted by the client.
    */
   public synchronized List<Job> getClientJobHistory(String loginID) {
       return DatabaseManager.getInstance().getClientJobHistory(loginID);

@@ -17,7 +17,7 @@ import java.time.format.DateTimeFormatter;
  */
 public class Server implements Serializable {
     private static final long serialVersionUID = 2L;
-    // private static final String STATE_FILE = "server_state.dat"; // Removed
+
 
     private final String serverID;
     private final String ipAddress;
@@ -54,7 +54,7 @@ public class Server implements Serializable {
         this.serverID = serverID;
         this.ipAddress = ipAddress;
 
-        // Initialize transient map here, outside of loadState()
+        // Initialize transient map
         this.activeNotificationClients = new ConcurrentHashMap<>();
 
         this.registeredVehicles = new ArrayList<>();
@@ -77,20 +77,19 @@ public class Server implements Serializable {
         }
     }
 
-    // Override readObject to handle transient fields after deserialization
+    // readObject handles transient fields after deserialization
     private void readObject(ObjectInputStream ois) throws IOException, ClassNotFoundException {
         ois.defaultReadObject();
         this.activeNotificationClients = new ConcurrentHashMap<>();
     }
 
     /** Saves the current state of critical server components. */
-    /** Saves the current state of critical server components. */
     @Deprecated
     public synchronized void saveState() {
-        // No-op: State is saved to DB immediately on change.
+        // State is saved to DB immediately on change.
     }
 
-    /** Loads the state from file on startup. */
+    
     @SuppressWarnings("unchecked")
     /** Loads the state from DB on startup. */
     public boolean loadState() {
@@ -99,7 +98,7 @@ public class Server implements Serializable {
     }
 
     /**
-     * Method to force reload the in-memory state from the DB.
+     * Method to reload the in-memory state from the DB.
      */
     public synchronized void reloadState() {
         DatabaseManager db = DatabaseManager.getInstance();
@@ -242,32 +241,28 @@ public class Server implements Serializable {
     }
 
     /**
-     * Returns the SENDER LOGIN ID for vehicle history filtering (used by VCController).
+     * for vehicle history filtering (VCController).
      */
     public String getOwnerIDForVehicle(Vehicle vehicle) {
         if (vehicle == null) return null;
         return vehicleSenderMap.get(vehicle.getVehicleID());
     }
 
-    /**
-     * Returns the USER-ENTERED Owner ID for display/CSV purposes (used by OwnerGUI/VCControllerGUI).
-     */
     public String getVehicleOwnerIDForDisplay(Vehicle vehicle) {
         if (vehicle == null) return null;
         return vehicleOwnerIdMap.get(vehicle.getVehicleID());
     }
 
     /**
-     * Maps the user-entered Owner ID to the vehicle's license plate (used by OwnerGUI on submission).
+     * Maps user-entered Owner ID to the vehicle's license plate (used by OwnerGUI on submission).
      */
     public synchronized void mapVehicleOwnerIDForDisplay(String licensePlate, String ownerEnteredID) {
         vehicleOwnerIdMap.put(licensePlate, ownerEnteredID);
-        // Note: This mapping is transient until vehicle is registered/saved to DB.
+        // transient until vehicle is registered/saved to DB.
         System.out.println("Server: Mapped license " + licensePlate + " to entered Owner ID " + ownerEnteredID);
     }
 
-    //
-
+    
 
     public synchronized Job retrieveJob(String jobID) {
         if (jobID == null) {
@@ -284,8 +279,7 @@ public class Server implements Serializable {
     public synchronized void storeCheckpoint(Checkpoint checkpoint) {
         if (checkpoint != null) {
             this.checkpointRepo.add(checkpoint);
-            // Checkpoints are transient for now, or we could add a DB table.
-            // saveState(); 
+            // Checkpoints are transient (we could add a DB table).
             System.out.println("Server: Stored checkpoint " + checkpoint.getCheckpointID());
         }
     }
@@ -299,7 +293,7 @@ public class Server implements Serializable {
     }
 
 
-    /** Registers a client's active notification connection. */
+    /** R client's active notification connection. */
     public synchronized void registerNotificationClient(String userID, ObjectOutputStream oos) {
         activeNotificationClients.put(userID, oos);
         System.out.println("Server: Registered active notifier for user: " + userID);
@@ -311,7 +305,6 @@ public class Server implements Serializable {
                 pushNotification(userID, msg);
             }
             pending.clear();
-            // saveState(); // Not needed as pushNotification handles persistence logic if failed
         }
     }
 
@@ -328,7 +321,7 @@ public class Server implements Serializable {
         }
     }
 
-    /** Internal method to push notification over active socket. */
+    /** Push notification over active socket. */
     private void pushNotification(String userID, String message) {
         ObjectOutputStream oos = activeNotificationClients.get(userID);
         if (oos != null) {
@@ -338,24 +331,22 @@ public class Server implements Serializable {
                 System.out.println("Server PUSH: Notification sent to " + userID + ": " + message);
             } catch (IOException e) {
                 System.err.println("Server PUSH failed for " + userID + ". Error: " + e.getMessage());
-                // Socket broken, remove client connection
+                // remove client connection
                 deregisterNotificationClient(userID);
-                // Fallback: queue the message back for the next poll/login
+                // Fallback: queue the message back for the next login
                 userNotifications.computeIfAbsent(userID, k -> new ArrayList<>()).add(message);
                 saveState();
             }
         } else {
             // If client not connected, use the persistent polling queue as a fallback
-            // userNotifications.computeIfAbsent(userID, k -> new ArrayList<>()).add(message);
-            // saveState();
             // DatabaseManager handles this.
             System.out.println("Server: Notification queued (no active client) for " + userID);
         }
     }
 
         /** 
-     * Sends a notification with GUARANTEED queuing for reliability.
-     * This ensures every notification is persisted and retrievable.
+     * Sends a notification with guaranteed queuing for reliability.
+     * Notification is persisted and retrievable.
      */
     public synchronized void notifyUser(String userID, String message) {
         if (userID == null || message == null) {
@@ -392,7 +383,7 @@ public class Server implements Serializable {
         return DatabaseManager.getInstance().getNotifications(userID);
     }
 
-    // Store registered vehicle:
+    // Store registered vehicle
     public synchronized void storeRegisteredVehicle(Vehicle vehicle) {
         if (vehicle != null && !registeredVehicles.contains(vehicle)) {
             registeredVehicles.add(vehicle);
@@ -408,12 +399,12 @@ public class Server implements Serializable {
         }
     }
 
-    // Get all registered vehicles:
+    // Get all registered vehicles
     public synchronized List<Vehicle> getAllRegisteredVehicles() {
         return new ArrayList<>(registeredVehicles);
     }
 
-    // Store approved job:
+    // Store approved job
     public synchronized void storeApprovedJob(Job job) {
         if (job != null && !approvedJobs.contains(job)) {
             approvedJobs.add(job);
@@ -429,12 +420,12 @@ public class Server implements Serializable {
         }
     }
 
-    // Get all approved jobs:
+    // Get all approved jobs
     public synchronized List<Job> getAllApprovedJobs() {
         return new ArrayList<>(approvedJobs);
     }
     
-    // Store completed job:
+    // Store completed job
     public synchronized void storeCompletedJob(Job job) {
         if (job != null) {
             storageArchive.add(job);

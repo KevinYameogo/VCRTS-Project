@@ -74,7 +74,7 @@ public class DatabaseManager {
         if (connection == null) return;
 
         try (Statement stmt = connection.createStatement()) {
-            // Users Table - Updated for structured billing
+            // Users Table - Structured billing
             String createUsers = "CREATE TABLE IF NOT EXISTS users (" +
                     "user_id VARCHAR(50) PRIMARY KEY, " +
                     "name VARCHAR(100), " +
@@ -86,7 +86,7 @@ public class DatabaseManager {
                     "expiry VARCHAR(10))";
             stmt.execute(createUsers);
 
-            // Jobs Table - Added timestamp
+            // Jobs Table 
             String createJobs = "CREATE TABLE IF NOT EXISTS jobs (" +
                     "job_id VARCHAR(50) PRIMARY KEY, " +
                     "client_id VARCHAR(50), " +
@@ -99,7 +99,7 @@ public class DatabaseManager {
                     "FOREIGN KEY (username) REFERENCES users(user_id))";
             stmt.execute(createJobs);
 
-            // Vehicles Table - Added timestamp and state fields
+            // Vehicles Table
             String createVehicles = "CREATE TABLE IF NOT EXISTS vehicles (" +
                     "vehicle_id VARCHAR(50) PRIMARY KEY, " +
                     "owner_id VARCHAR(50), " +
@@ -140,7 +140,7 @@ public class DatabaseManager {
                     "decision_timestamp DATETIME)";
             stmt.execute(createRequests);
 
-            // VC Controller Logs/Notifications Table
+            // VC Controller Notifications Table
             String createControllerLogs = "CREATE TABLE IF NOT EXISTS controller_logs (" +
                     "id INT AUTO_INCREMENT PRIMARY KEY, " +
                     "message TEXT, " +
@@ -611,11 +611,7 @@ public class DatabaseManager {
                 Object data = ois.readObject();
                 
                 Request req = new Request(reqId, senderId, type, data);
-                // We need to restore the state of the request object manually or add setters to Request
-                // For now, we'll assume Request is simple enough or we might need to refactor Request to allow setting status/timestamps
-                // Actually, Request has methods like approve(), reject(), acknowledge() which change state.
-                // But setting exact timestamps might require new setters.
-                // Let's just set what we can.
+                
                 if ("Approved".equals(status)) req.approve();
                 if ("Rejected".equals(status)) req.reject();
                 if (ack) req.acknowledge();
@@ -654,5 +650,15 @@ public class DatabaseManager {
             e.printStackTrace();
         }
         return logs;
+    }
+
+    public void clearVCNotifications() {
+        if (connection == null) return;
+        String sql = "DELETE FROM controller_logs";
+        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
     }
 }

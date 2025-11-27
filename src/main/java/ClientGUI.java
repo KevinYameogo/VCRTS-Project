@@ -134,7 +134,7 @@ public class ClientGUI extends JPanel {
         loadJobsFromCentralStorage();
         loadBillingInfo();
         loadBillingInfo();
-        loadNotifications(); // Re-enabled to show persistent history
+        loadNotifications(); 
 
         // Start persistent notification listener (only if not already running)
         startNotificationClient();
@@ -156,9 +156,6 @@ public class ClientGUI extends JPanel {
             // Reconnect GUI callbacks to the existing client
             backgroundNotificationClient.setNotificationCallback(this::addNotification);
             
-            // Load any queued notifications from server
-            // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
-            
             // Start status refresh timer
             startStatusRefreshTimer();
             return;
@@ -175,9 +172,6 @@ public class ClientGUI extends JPanel {
         notificationThread = new Thread(backgroundNotificationClient);
         notificationThread.setDaemon(false); // NOT a daemon - stays alive after GUI closes
         notificationThread.start();
-        
-        // Load any queued notifications from server
-        // checkServerNotifications(); // Removed to prevent duplicates (loaded in constructor)
         
         // Start status refresh timer
         startStatusRefreshTimer();
@@ -278,14 +272,6 @@ public class ClientGUI extends JPanel {
                 }
             }
             System.out.println("NotificationClient: Shutdown for " + userID);
-        }
-        
-        /**
-         * Fallback for when no GUI is active.
-         * Persistence is now handled by the Server/Database.
-         */
-        private void saveNotificationToFile(String notification) {
-            // Deprecated: File persistence removed.
         }
     }
     
@@ -399,14 +385,7 @@ public class ClientGUI extends JPanel {
                 badgeLabel.setVisible(true);
             }
             
-            // Save to DB REMOVED - Server handles this now to prevent duplicates
         });
-    }
-
-    // Also update the saveNotifications method to ensure count is ALWAYS saved:
-
-    private void saveNotifications() {
-        // Deprecated: Notifications are saved to DB immediately on add.
     }
 
     private void resetNotificationBadge() {
@@ -539,7 +518,7 @@ public class ClientGUI extends JPanel {
                 backgroundNotificationClient.setNotificationCallback(null);
             }
             
-            saveNotifications();
+            // saveNotifications();
             onLogout.run();
         });
 
@@ -849,8 +828,6 @@ public class ClientGUI extends JPanel {
         }
     }
     
-    // Deprecated
-    private void saveBillingInfo() {}
 
     private void loadJobsFromCentralStorage() {
         List<Job> jobs = controller.getClientJobHistory(clientUser.getUserID());

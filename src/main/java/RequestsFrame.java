@@ -93,7 +93,7 @@ public class RequestsFrame extends JFrame {
         jobTableModel = new DefaultTableModel(columns, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 8; // Only Actions column is editable
+                return column == 8; 
             }
         };
         
@@ -123,7 +123,7 @@ public class RequestsFrame extends JFrame {
         vehicleTableModel = new DefaultTableModel(columns, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column == 9; // Only Actions column is editable
+                return column == 9;
             }
         };
         

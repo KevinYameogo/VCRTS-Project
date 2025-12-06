@@ -10,7 +10,6 @@ public class UserStore {
         if (user == null) return;
         try {
             DatabaseManager.getInstance().saveUser(user);
-            // System.out.println("User data saved to database."); 
         } catch (Exception e) {
             e.printStackTrace();
             JOptionPane.showMessageDialog(null, "Error saving user data to database.", "Persistence Error", JOptionPane.ERROR_MESSAGE);

@@ -170,7 +170,7 @@ public class LandingPage extends JFrame {
                     // Pass the server instance from controller
                     VCControllerGUI vcControllerPanel = new VCControllerGUI(
                         this.controller, 
-                        this.controller.getServer(),  // Changed from null to actual server
+                        this.controller.getServer(), 
                         onBack
                     );
                     mainContentPanel.add(vcControllerPanel, "VC_CONTROLLER_VIEW");
@@ -245,7 +245,7 @@ public class LandingPage extends JFrame {
         if (userFromFile != null) {
             // File Found: Authenticate against the file-stored password
             if (userFromFile.getPassword().equals(password)) {
-                return userFromFile; // SUCCESS: Logged in with file-stored password
+                return userFromFile;
             }
             // File found but password mismatch
             return null; 

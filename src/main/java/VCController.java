@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.HashMap; 
 import java.io.*; 
 import java.util.Objects; 
-import java.time.LocalDateTime;
+
 
 /**
  * VCController with client-server request processing.
@@ -120,9 +120,6 @@ public class VCController implements Serializable {
       // Acknowledge receipt immediately
       request.acknowledge();
       
-      // Save acknowledged state to DB
-      DatabaseManager.getInstance().saveRequest(request);
-      
       // Notify User
       String msg = "Job request " + request.getRequestID() + " received and acknowledged";
       if (request.getData() instanceof Job) {
@@ -207,9 +204,6 @@ public class VCController implements Serializable {
       }
       
       request.acknowledge();
-      
-      // Save acknowledged state to DB
-      DatabaseManager.getInstance().saveRequest(request);
       
       // Notify User
       String msg = "Vehicle registration " + request.getRequestID() + " received and acknowledged";
@@ -334,6 +328,9 @@ public class VCController implements Serializable {
       vehicleJobMap.put(vehicleToAssign, job);
       
       vehicleToAssign.startExecution(jobID); 
+
+      // Save the updated vehicle state (Active, Job ID) to the database
+      systemServer.storeRegisteredVehicle(vehicleToAssign);
     }
     jobVehicleMap.put(job, assignedVehicles);
   }
@@ -471,7 +468,7 @@ public class VCController implements Serializable {
     }
     System.out.println("Checkpoint signal sent to " + vehiclesTriggered + " vehicle(s).");
   }
-
+  //
   public synchronized void recruitVehicle(Vehicle vehicle){
     this.availableVehicles.add(vehicle);
     System.out.println("New vehicle recruited: " + vehicle.getVehicleID() 
@@ -570,7 +567,7 @@ public class VCController implements Serializable {
   
   /**
    * Returns a list of all jobs (Pending, In-Progress, Archived) associated 
-   * with the given client ID (which is the login ID).
+   * with the given client ID .
    */
   public synchronized List<Job> getClientJobHistory(String loginID) {
       return DatabaseManager.getInstance().getClientJobHistory(loginID);

@@ -12,7 +12,6 @@ import java.util.Map;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 import java.util.List;
-import java.util.ArrayList;
 import java.net.Socket;
 
 /**
@@ -44,7 +43,6 @@ public class OwnerGUI extends JPanel {
     private JTextField licenseField;
     private JComboBox<String> stateComboBox;
 
-    private String paymentInfo; 
     private JButton addPaymentButton; 
     private JTable paymentTable;
     private DefaultTableModel paymentTableModel;
@@ -60,12 +58,10 @@ public class OwnerGUI extends JPanel {
     private JLabel badgeLabel;
     private int notificationCount = 0;
     private int notificationsTabIndex;
+    private JTabbedPane tabs;
 
     private DefaultTableModel tableModel;
     private JTable table;
-
-    private final String PAYMENT_FILE;
-    private final String NOTIFICATION_FILE;
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -81,12 +77,11 @@ public class OwnerGUI extends JPanel {
         this.server = controller.getServer();
         this.submittedRequests = new HashMap<>();
     
-        this.PAYMENT_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_payment.dat";
-        this.NOTIFICATION_FILE = ownerUser.getUserID() + "_" + ownerUser.getRole() + "_notifications.txt";
+
 
         this.setLayout(new BorderLayout());
 
-        JTabbedPane tabs = new JTabbedPane();
+        tabs = new JTabbedPane();
         tabs.addTab("Register Vehicle", createRegisterVehiclePanel());
         tabs.addTab("Manage Payment", createPaymentPanel());
         tabs.addTab("Change Password", createPasswordPanel());
@@ -107,8 +102,8 @@ public class OwnerGUI extends JPanel {
         badgeLabel.setVisible(false);
         badgeLabel.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1, true));
         
-        // Initialize badge with unread count from DB
-        int unreadCount = DatabaseManager.getInstance().getUnreadNotificationCount(ownerUser.getUserID());
+        // Initialize badge with unread count from Server (In-Memory)
+        int unreadCount = server.getUnreadNotificationCount(ownerUser.getUserID());
         if (unreadCount > 0) {
             notificationCount = unreadCount;
             badgeLabel.setText(String.valueOf(notificationCount));
@@ -127,8 +122,8 @@ public class OwnerGUI extends JPanel {
             public void stateChanged(ChangeEvent e) {
                 if (tabs.getSelectedIndex() == notificationsTabIndex) {
                     resetNotificationBadge();
-                    // Mark all as read in DB when tab is opened
-                    DatabaseManager.getInstance().markNotificationsRead(ownerUser.getUserID());
+                    // Mark all as read in Server when tab is opened
+                    server.markNotificationsRead(ownerUser.getUserID());
                 } else if (tabs.getSelectedIndex() == 0) { 
                     loadVehiclesFromCentralStorage(); 
                 }
@@ -222,9 +217,7 @@ public class OwnerGUI extends JPanel {
             this.callback = callback;
         }
         
-        public void shutdown() {
-            this.running = false;
-        }
+
 
         @Override
         public void run() {
@@ -284,13 +277,6 @@ public class OwnerGUI extends JPanel {
         void onNotificationReceived(String notification);
     }
     
-    private void checkServerNotifications() {
-        List<String> serverNotifications = DatabaseManager.getInstance().getNotifications(ownerUser.getUserID());
-        for (String notification : serverNotifications) {
-            addNotification(notification);
-        }
-    }
-    
     private void checkRequestStatuses() {
         java.util.Iterator<Map.Entry<String, String>> iterator = submittedRequests.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -301,11 +287,9 @@ public class OwnerGUI extends JPanel {
             Request request = server.getRequest(requestID);
             
             if (request == null || !request.getStatus().equals("Pending")) {
-                Vehicle vehicle = (Vehicle) (request != null ? request.getData() : null);
-                String vehicleID = (vehicle != null) ? vehicle.getVehicleID() : vehicleSignature;
+
 
                 if (request != null && request.getStatus().equals("Approved")) {
-                // Notification handled by Server Push
             } else if (request != null && request.getStatus().equals("Rejected")) {
                 // Notification handled by Server Push
                 removeVehicleFromTable(vehicleSignature);
@@ -331,24 +315,7 @@ public class OwnerGUI extends JPanel {
         });
     }
     
-    private void updateNotificationBadge() {
-        JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, this);
-        if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
-             notificationCount++;
-             badgeLabel.setText(String.valueOf(notificationCount));
-             badgeLabel.setVisible(true);
-        }
-    }
-    
-    private void setNotificationCount(int count) {
-        this.notificationCount = count;
-        if (count > 0) {
-            badgeLabel.setText(String.valueOf(count));
-            badgeLabel.setVisible(true);
-        } else {
-            badgeLabel.setVisible(false);
-        }
-    }
+
 
     private JPanel createNotificationsPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
@@ -373,7 +340,7 @@ public class OwnerGUI extends JPanel {
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
             resetNotificationBadge();
-            DatabaseManager.getInstance().clearNotifications(ownerUser.getUserID());
+            server.clearNotifications(ownerUser.getUserID());
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -393,8 +360,7 @@ public class OwnerGUI extends JPanel {
         SwingUtilities.invokeLater(() -> {
             notificationListModel.addElement(formattedMessage);
             
-            JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, OwnerGUI.this);
-            if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
+            if (tabs != null && tabs.getSelectedIndex() != notificationsTabIndex) {
                 notificationCount++;
                 badgeLabel.setText(String.valueOf(notificationCount));
                 badgeLabel.setVisible(true);
@@ -410,7 +376,7 @@ public class OwnerGUI extends JPanel {
 
     private void loadNotifications() {
         notificationListModel.clear();
-        List<String> notifs = DatabaseManager.getInstance().getNotifications(ownerUser.getUserID());
+        List<String> notifs = server.getNotifications(ownerUser.getUserID());
         for (String n : notifs) {
             notificationListModel.addElement(n);
         }
@@ -774,8 +740,6 @@ public class OwnerGUI extends JPanel {
             "Status: Waiting for VC Controller approval...", 
             "Request Acknowledged", 
             JOptionPane.INFORMATION_MESSAGE);
-        
-        // addNotification("Vehicle registration request for " + license + " submitted and acknowledged by server"); // Removed - Server sends this
 
         String ts = TS_FMT.format(LocalDateTime.now());
         tableModel.addRow(new Object[]{
@@ -800,9 +764,6 @@ public class OwnerGUI extends JPanel {
             }
         }
     }
-
-    // Deprecated
-    private void savePaymentInfo() {}
 
     private void clearForm() {
         ownerIdField.setText("");

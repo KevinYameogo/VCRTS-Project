@@ -7,12 +7,10 @@ import java.io.*;
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.ThreadLocalRandom;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.ArrayList; 
 import java.util.List; 
 import java.net.Socket;
 import java.util.UUID;
@@ -44,7 +42,6 @@ public class ClientGUI extends JPanel {
     private JSpinner deadlineYearSpinner;
     private JSpinner deadlineHourSpinner;
 
-    private String billingInfo; 
     private JButton addBillingButton;
     private JTable billingTable;
     private DefaultTableModel billingTableModel;
@@ -63,6 +60,7 @@ public class ClientGUI extends JPanel {
     private JLabel badgeLabel;
     private int notificationCount = 0;
     private int notificationsTabIndex;
+    private JTabbedPane tabs;
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -73,12 +71,11 @@ public class ClientGUI extends JPanel {
         this.controller = controller;
         this.server = controller.getServer();
         this.submittedRequests = new HashMap<>();
-        
-        // this.billingInfo = clientUser.getBillingInfo(); // Removed
+
         
         setLayout(new BorderLayout());
 
-        JTabbedPane tabs = new JTabbedPane();
+        tabs = new JTabbedPane();
         tabs.addTab("Submit New Job", createSubmitJobPanel());
         tabs.addTab("Manage Existing Jobs", createManageJobsPanel());
         tabs.addTab("Manage Billing", createBillingPanel());
@@ -100,8 +97,8 @@ public class ClientGUI extends JPanel {
         badgeLabel.setVisible(false);
         badgeLabel.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1, true));
         
-        // Initialize badge with unread count from DB
-        int unreadCount = DatabaseManager.getInstance().getUnreadNotificationCount(clientUser.getUserID());
+        // Initialize badge with unread count from Server (In-Memory)
+        int unreadCount = server.getUnreadNotificationCount(clientUser.getUserID());
         if (unreadCount > 0) {
             notificationCount = unreadCount;
             badgeLabel.setText(String.valueOf(notificationCount));
@@ -122,8 +119,8 @@ public class ClientGUI extends JPanel {
             public void stateChanged(ChangeEvent e) {
                 if (tabs.getSelectedIndex() == notificationsTabIndex) {
                     resetNotificationBadge();
-                    // Mark all as read in DB when tab is opened
-                    DatabaseManager.getInstance().markNotificationsRead(clientUser.getUserID());
+                    // Mark all as read in Server when tab is opened
+                    server.markNotificationsRead(clientUser.getUserID());
                 } else if (tabs.getSelectedIndex() == 0 || tabs.getSelectedIndex() == 1) { 
                     loadJobsFromCentralStorage(); 
                 }
@@ -283,16 +280,7 @@ public class ClientGUI extends JPanel {
         void onNotificationReceived(String notification);
     }
     
-    /**
-     * Checks for new notifications from the server queue (fallback).
-     */
-    private void checkServerNotifications() {
-        // Load notifications from Database
-        List<String> serverNotifications = DatabaseManager.getInstance().getNotifications(clientUser.getUserID());
-        for (String notification : serverNotifications) {
-            addNotification(notification);
-        }
-    }
+
     
     /**
      * Checks the status of submitted requests and updates the UI accordingly.
@@ -330,8 +318,6 @@ public class ClientGUI extends JPanel {
             }
         });
     }
-    
-
 
     private JPanel createNotificationsPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
@@ -356,7 +342,7 @@ public class ClientGUI extends JPanel {
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
             resetNotificationBadge();
-            DatabaseManager.getInstance().clearNotifications(clientUser.getUserID());
+            server.clearNotifications(clientUser.getUserID());
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -378,8 +364,7 @@ public class ClientGUI extends JPanel {
             
             // Always increment badge for NEW notifications
             // Check if we're NOT on the notifications tab before incrementing
-            JTabbedPane tabs = (JTabbedPane) SwingUtilities.getAncestorOfClass(JTabbedPane.class, ClientGUI.this);
-            if (tabs == null || tabs.getSelectedIndex() != notificationsTabIndex) {
+            if (tabs != null && tabs.getSelectedIndex() != notificationsTabIndex) {
                 notificationCount++;
                 badgeLabel.setText(String.valueOf(notificationCount));
                 badgeLabel.setVisible(true);
@@ -395,7 +380,7 @@ public class ClientGUI extends JPanel {
     
     private void loadNotifications() {
         notificationListModel.clear();
-        List<String> notifs = DatabaseManager.getInstance().getNotifications(clientUser.getUserID());
+        List<String> notifs = server.getNotifications(clientUser.getUserID());
         for (String n : notifs) {
             notificationListModel.addElement(n);
         }
@@ -518,7 +503,6 @@ public class ClientGUI extends JPanel {
                 backgroundNotificationClient.setNotificationCallback(null);
             }
             
-            // saveNotifications();
             onLogout.run();
         });
 

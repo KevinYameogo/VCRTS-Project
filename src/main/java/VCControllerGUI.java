@@ -96,7 +96,6 @@ public class VCControllerGUI extends JPanel {
             // Stop the timer
             stopTimer();
             stopTimer();
-            // server.saveState();
             if (onBack != null) {
                 onBack.run();
             }
@@ -244,7 +243,7 @@ public class VCControllerGUI extends JPanel {
         JButton clearButton = new JButton("Clear All");
         clearButton.addActionListener(e -> {
             notificationListModel.clear();
-            DatabaseManager.getInstance().clearVCNotifications();
+            server.clearControllerLogs();
         });
         buttonPanel.add(clearButton);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -443,8 +442,8 @@ public class VCControllerGUI extends JPanel {
         String timestamp = TS_FMT.format(LocalDateTime.now());
         SwingUtilities.invokeLater(() -> {
             notificationListModel.addElement("[" + timestamp + "] " + message);
-            // Save to DB immediately
-            DatabaseManager.getInstance().saveVCNotification("[" + timestamp + "] " + message);
+            // Save to Server Memory
+            server.logControllerMessage("[" + timestamp + "] " + message);
         });
     }
 
@@ -460,7 +459,7 @@ public class VCControllerGUI extends JPanel {
 
     /** Loads notifications from DB when GUI starts. */
     private void loadNotifications() {
-        java.util.List<String> logs = DatabaseManager.getInstance().getVCNotifications();
+        java.util.List<String> logs = server.getControllerLogs();
         notificationListModel = new DefaultListModel<>();
         for (String log : logs) {
             notificationListModel.addElement(log);
@@ -471,15 +470,12 @@ public class VCControllerGUI extends JPanel {
     }
 
     // Methods for action handling (Called by RequestsFrame)
-
     public synchronized void handleAccept(String requestID) {
         Request req = server.getRequest(requestID);
         if (req == null) {
             System.err.println("VCController: Request not found: " + requestID);
             return;
         }
-
-        String senderId = req.getSenderID(); // 
 
         if (req.getRequestType().equals("JOB_SUBMISSION")) {
             Job job = (Job) req.getData();
@@ -509,9 +505,6 @@ public class VCControllerGUI extends JPanel {
             System.err.println("VCController: Request not found: " + requestID);
             return;
         }
-
-        String senderId = req.getSenderID();
-
         if (req.getRequestType().equals("JOB_SUBMISSION")) {
             Job job = (Job) req.getData();
             
